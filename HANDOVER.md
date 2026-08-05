@@ -1,52 +1,20 @@
 # Handover note — Linera throughput evaluation
 
-Written 2026-08-05. Covers everything done this session: restoring/merging the dynamic-sharding
-work, building a bare-metal (no Docker) benchmark harness against two real machines, a max-TPS-
-vs-worker-count sweep, an elasticity (auto-scaling) experiment, and a storage-layer lock-
-contention investigation.
 
-## 0. Read this first
-
-- **`https://github.com/harnen/linera-protocol`, branch `light_client`**: fully committed and pushed as of this note,
-  including `linera-rpc/src/routing.rs` and `linera-service/src/manager.rs` (were referenced
-  by an earlier commit but never actually committed — fixed, branch compiles from a fresh
-  clone) and the storage-layer `crossbeam-skiplist` rewrite (section 1.3, commit
-  `fbb2c4c3ab`). Nothing outstanding on this repo.
-- **`linera-paper-eval` (this repo)**: all the scripts built this session were untracked until
-  now. They're committed to a new branch, **`michal`**, but **I could not push it** — no
-  write access to `github.com/mrd0ll4r/linera-paper-eval` from this machine (checked both
-  HTTPS and SSH). Someone with push access needs to run `git push -u origin michal` from
-  `/home/harnen/work/linera/linera-paper-eval`, or the commit needs to be moved to wherever
-  you'd normally push from. Until that happens, this repo's `master` branch has none of this
-  session's scripts.
-- Everything below assumes you're on that `michal` branch.
-
+- The modified code is in **`https://github.com/harnen/linera-protocol`, branch `light_client`**
+- Evaluation scripts in **`https://github.com/harnen/linera-paper-eval`**
+- 
 ## 1. Code changes
 
 ### 1.1 Light client (`linera-lite-benchmark`)
-
-Pre-existing tool (predates this session), extended here. File:
-`linera-protocol/linera-service/src/lite_benchmark.rs`.
 
 - Added `--bps-schedule "offset:bps,offset:bps,..."`: a time-varying target rate instead of a
   fixed `--bps`, for the elasticity experiment. Must start at offset 0. A background task polls
   every 200ms and updates a shared `Arc<AtomicUsize>`; each chain's task recomputes its own
   share every tick and rebuilds its `tokio::time::interval` only when the rate actually changes.
-- **Bug fixed**: the per-chain rate was computed as `current_bps / num_chains` using **integer**
-  division. With many chains and a low aggregate rate (e.g. 9 total ÷ 10 chains on one client),
-  this truncates to exactly 0 — not "sparse traffic", but **permanently zero** traffic for that
-  chain until the schedule moves to a high-enough rate again. Fixed by switching to `f64`
-  division. See section 3.1 for the debugging story; this bug class (integer division silently
-  zeroing a low-but-nonzero rate) also existed in the bash-side pre-division in
-  `run_lite_benchmark_parallel.sh` and was fixed there too (floor → ceiling rounding).
 
 ### 1.2 Dynamic sharding (elastic worker pool)
 
-Restored from a separate, incomplete branch + an old stash (see git log on `light_client`:
-merge commit `8eb7a430ba`, "next iteration" `bfc63d6a34`, plus the `routing.rs`/`manager.rs`
-commit added at the end of this session). Now fully committed and pushed.
-
-Key pieces, all in `linera-protocol`:
 - **`linera-rpc/src/routing.rs`** — `ShardRouter`: a dynamic chain→shard routing table.
   Default assignment is a public-key-seeded hash over the validator's `base_shards` slots;
   individual chains can be migrated to any shard at runtime. Acts as a handover barrier: a
@@ -72,12 +40,8 @@ Key pieces, all in `linera-protocol`:
   [--low-watermark high/4] [--max-migrations-per-round 8] [--scale-down-rounds 5]
   [--cooldown-rounds 3] [--spawn-command "..."]`.
 
-**Known cost**: every request (on shards *and* the proxy) now goes through
-`router.shard_for()`/`read_guard()` — an async `RwLock` read plus a `papaya::HashMap` lookup —
-instead of a plain synchronous hash computation. This is real, measured overhead (see section
-3.2), separate from anything storage-related.
 
-### 1.3 Storage layer (`MemoryStore`) — tested, kept, **not yet committed**
+### 1.3 Storage layer (`MemoryStore`)
 
 File: `linera-protocol/linera-views/src/backends/memory.rs`.
 
@@ -85,12 +49,6 @@ Original design: one `Arc<std::sync::RwLock<BTreeMap<Vec<u8>, Vec<u8>>>>` per ch
 takes a shared lock, every `write_batch` takes an exclusive lock over the *whole chain's*
 keyspace — so one chain's writes block all its own concurrent reads.
 
-- **Tried and reverted**: swapping to `parking_lot::RwLock`/`Mutex` (same coarse-lock
-  structure, just a different lock implementation). Under real contention (~45k tx/s) this made
-  things **3-4x worse**, not better — `parking_lot`'s optimistic spin-then-park strategy burns
-  CPU cycles under *sustained* high contention with far more threads than cores (this system
-  runs ~800 Tokio worker threads across 19 shards + proxy on a 40-core box), worsening a
-  thundering-herd effect instead of helping. Reverted via `git checkout --`.
 - **Kept**: rewrote `MemoryStore` to use `crossbeam_skiplist::SkipMap<Vec<u8>, Vec<u8>>` — a
   lock-free, sorted, concurrent map. No lock at all now; reads/writes/range-scans on different
   keys never contend. Added `crossbeam-skiplist = "0.1"` (resolves to 0.1.3) as a new workspace
@@ -108,15 +66,10 @@ keyspace — so one chain's writes block all its own concurrent reads.
     gain (41,512.5 → 46,965 tx/s at 19 shards, same core-pinning config as the old baseline —
     see section 3.2 for how the isolation was done).
 
-Committed and pushed to `light_client` as commit `fbb2c4c3ab`. A fresh checkout of
-`light_client` now includes this fix — no manual steps needed.
-
-## 2. Scripts (all in `linera-paper-eval/scripts/`, branch `michal`)
+## 2. Scripts (all in `linera-paper-eval/scripts/`)
 
 All of these assume two real machines reachable over SSH — a validator host (`sparta` in the
-SSH config used this session) and a client host (`yiannis-testbed`) — not the Docker Compose
-flow described in the main `README.md`. See `README.md`'s new "Running across two real
-machines" section for the manual step-by-step; the scripts below automate that.
+SSH config used this session) and a client host (`yiannis-testbed`).
 
 | Script | Purpose | Key env vars | Output |
 |---|---|---|---|
@@ -184,7 +137,7 @@ section 3.2).
 
 - **The original default (`RESERVED_CORES=2`, i.e. proxy+storage share a fixed 2-core budget)
   creates a hard throughput ceiling around ~20,000 tx/s, completely independent of shard
-  count.** Confirmed directly: `sparta_reserved_pct` (the proxy+storage core range) hit ~80%
+  count.** `sparta_reserved_pct` (the proxy+storage core range) hit ~80%
   utilization right as every ramp's stop condition tripped, while `sparta_shard_pct` (the
   shards' own cores) sat at only ~19-20%. Shards 7 through 19 in that config were essentially
   idle, waiting on a saturated 2-core proxy+storage budget — adding more shards past ~6 did

@@ -7,12 +7,11 @@ contention investigation.
 
 ## 0. Read this first
 
-- **`linera-protocol`, branch `light_client`**: fully committed and pushed as of this note
-  (including `linera-rpc/src/routing.rs` and `linera-service/src/manager.rs`, which were
-  referenced by an earlier commit but never actually committed — that's fixed now, the branch
-  compiles from a fresh clone). **Exception**: the storage-layer `crossbeam-skiplist` rewrite
-  (section 1.3) is tested and works but is still **uncommitted** — see that section for the
-  exact files and why it wasn't committed automatically.
+- **`linera-protocol`, branch `light_client`**: fully committed and pushed as of this note,
+  including `linera-rpc/src/routing.rs` and `linera-service/src/manager.rs` (were referenced
+  by an earlier commit but never actually committed — fixed, branch compiles from a fresh
+  clone) and the storage-layer `crossbeam-skiplist` rewrite (section 1.3, commit
+  `fbb2c4c3ab`). Nothing outstanding on this repo.
 - **`linera-paper-eval` (this repo)**: all the scripts built this session were untracked until
   now. They're committed to a new branch, **`michal`**, but **I could not push it** — no
   write access to `github.com/mrd0ll4r/linera-paper-eval` from this machine (checked both
@@ -109,14 +108,8 @@ keyspace — so one chain's writes block all its own concurrent reads.
     gain (41,512.5 → 46,965 tx/s at 19 shards, same core-pinning config as the old baseline —
     see section 3.2 for how the isolation was done).
 
-**Why this isn't committed**: only the routing/manager fix and the paper-eval scripts were
-explicitly approved for committing this session; the skiplist rewrite is proven but was never
-asked to be committed. The diff is sitting locally in `linera-protocol` (`git status --short`
-shows `Cargo.lock`, `Cargo.toml`, `linera-views/Cargo.toml`,
-`linera-views/src/backends/memory.rs` modified). **Decide whether to commit this before doing
-more work that depends on it** — currently-deployed binaries on sparta/yiannis-testbed *do*
-have this fix built in (from the last deploy), but a fresh build from a fresh `light_client`
-checkout will not, until it's committed.
+Committed and pushed to `light_client` as commit `fbb2c4c3ab`. A fresh checkout of
+`light_client` now includes this fix — no manual steps needed.
 
 ## 2. Scripts (all in `linera-paper-eval/scripts/`, branch `michal`)
 
@@ -270,9 +263,7 @@ helped is the ceiling test (section 4, above), which is unambiguous.
    nor "shard thread starvation" (tested directly, didn't help) fully explains it. A controlled,
    apples-to-apples ramped comparison of pinned vs. unpinned shards (same starting conditions,
    same warm-up) would help nail this down before trusting either number in isolation.
-3. **The skiplist storage change (section 1.3) needs a decision on whether/when to commit it**
-   before more work builds on top of it.
-4. Sweep results in this session are **single-sample per configuration** — no repeats, no error
+3. Sweep results in this session are **single-sample per configuration** — no repeats, no error
    bars. If these numbers are going in the paper, consider re-running key configurations 2-3x to
    get a sense of run-to-run variance (the noisy sawtooth in the unpinned shard-count sweep
    suggests it's non-trivial).

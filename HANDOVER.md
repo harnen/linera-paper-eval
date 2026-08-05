@@ -7,7 +7,7 @@ contention investigation.
 
 ## 0. Read this first
 
-- **`linera-protocol`, branch `light_client`**: fully committed and pushed as of this note,
+- **`https://github.com/harnen/linera-protocol`, branch `light_client`**: fully committed and pushed as of this note,
   including `linera-rpc/src/routing.rs` and `linera-service/src/manager.rs` (were referenced
   by an earlier commit but never actually committed — fixed, branch compiles from a fresh
   clone) and the storage-layer `crossbeam-skiplist` rewrite (section 1.3, commit

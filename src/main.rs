@@ -94,6 +94,10 @@ async fn create_rocksdb_storage(path: &Path) -> Result<RocksDbStorage> {
     Ok(storage)
 }
 
+fn eval_output_dir() -> String {
+    std::env::var("EVAL_OUTPUT_DIR").unwrap_or_else(|_| "/data_out".to_string())
+}
+
 async fn set_up_chains(
     wallet: &PersistentWallet,
     keystore: &mut Keystore,
@@ -445,7 +449,7 @@ async fn run_two_phase_constant_bps_experiment(
     experiment_name: &str,
     tx_per_block: usize,
 ) -> Result<(), Error> {
-    let outdir = format!("/data_out/two_phase/{}", experiment_name);
+    let outdir = format!("{}/two_phase/{}", eval_output_dir(), experiment_name);
     // Create output directory
     tokio::fs::create_dir_all(outdir.clone())
         .await
@@ -608,7 +612,7 @@ async fn run_many_chain_token_transfer_experiment(
     experiment_name: &str,
     tx_per_block: usize,
 ) -> Result<(), Error> {
-    let outdir = format!("/data_out/many_chains/{}", experiment_name);
+    let outdir = format!("{}/many_chains/{}", eval_output_dir(), experiment_name);
     // Create output directory
     tokio::fs::create_dir_all(outdir.clone())
         .await

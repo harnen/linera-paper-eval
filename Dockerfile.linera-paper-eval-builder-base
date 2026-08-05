@@ -6,7 +6,11 @@ FROM rust:1.95.0-bookworm AS builder
 
 ARG PROTOC_VERSION=21.11
 ARG PROTOC_ZIP=protoc-21.11-linux-x86_64.zip
-ARG LINERA_GIT_REV="d8dd22d7e0c3363fdd6d964bccc7a92ca94238e9"
+# Fork with the light-client benchmark tool (linera-lite-benchmark). Point this at an exact
+# commit hash once it's pushed, rather than the moving branch name, to keep builds
+# reproducible -- same reasoning as pinning upstream's LINERA_GIT_REV used to.
+ARG LINERA_GIT_URL="https://github.com/harnen/linera-protocol.git"
+ARG LINERA_GIT_REV="light_client"
 
 # These are optionally overridden by the build script.
 ARG CARGO_PROFILE_FLAG=""
@@ -40,7 +44,7 @@ ENV RUSTC_WRAPPER=sccache
 ENV SCCACHE_DIR=/sccache
 
 WORKDIR /
-RUN git clone https://github.com/linera-io/linera-protocol.git linera-src
+RUN git clone ${LINERA_GIT_URL} linera-src
 WORKDIR /linera-src
 RUN git checkout ${LINERA_GIT_REV}
 
@@ -51,15 +55,17 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build ${CARGO_PROFILE_FLAG} \
     --locked \
     --config profile.release.debug=false \
-    --features opentelemetry \
+    --features opentelemetry,metrics \
     -p linera-service \
     --bin linera \
     --bin linera-server \
     --bin linera-proxy \
+    --bin linera-lite-benchmark \
     -p linera-storage-service \
     --bin linera-storage-server \
     && mkdir -p /out \
     && cp /linera-src/target/${TARGET_DIR}/linera /out/ \
     && cp /linera-src/target/${TARGET_DIR}/linera-server /out/ \
     && cp /linera-src/target/${TARGET_DIR}/linera-proxy /out/ \
+    && cp /linera-src/target/${TARGET_DIR}/linera-lite-benchmark /out/ \
     && cp /linera-src/target/${TARGET_DIR}/linera-storage-server /out/

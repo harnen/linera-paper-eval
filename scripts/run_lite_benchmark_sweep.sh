@@ -16,7 +16,7 @@ set -euo pipefail
 #   BPS_LIST                       (default "10 100 1000")
 #   RUNTIME_SECONDS                (default 60) duration of each individual run
 #   INITIAL_BALANCE                (default 1000) passed to provisioning
-#   EVAL_OUTPUT_DIR                (default /data_out)
+#   EVAL_OUTPUT_DIR                (default ./data_out)
 
 LINERA_WALLET="${LINERA_WALLET:?set LINERA_WALLET to the admin wallet path}"
 LINERA_KEYSTORE="${LINERA_KEYSTORE:?set LINERA_KEYSTORE to the admin keystore path}"
@@ -27,7 +27,7 @@ TX_PER_BLOCK_LIST="${TX_PER_BLOCK_LIST:-1 10 100}"
 BPS_LIST="${BPS_LIST:-10 100 1000}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-60}"
 INITIAL_BALANCE="${INITIAL_BALANCE:-1000}"
-EVAL_OUTPUT_DIR="${EVAL_OUTPUT_DIR:-/data_out}"
+EVAL_OUTPUT_DIR="${EVAL_OUTPUT_DIR:-./data_out}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 export LINERA_WALLET LINERA_KEYSTORE BIN_DIR EVAL_OUTPUT_DIR

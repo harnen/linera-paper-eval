@@ -60,6 +60,9 @@ fi
 outdir="${EVAL_OUTPUT_DIR}/lite_benchmark/${EXPERIMENT_NAME}"
 mkdir -p "${outdir}"
 
+# Save experiment config
+env > "${outdir}/.env"
+
 rate_args=()
 if [ -n "${BPS_SCHEDULE}" ]; then
   # Divide every breakpoint's bps by NUM_CLIENTS so the *system-wide* schedule is what's

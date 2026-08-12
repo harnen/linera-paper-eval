@@ -267,6 +267,9 @@ while read -r port; do
   ensure_port_free "${port}"
 done < <(jq -r '.internal_network.shards[].port, .internal_network.shards[].metrics_port, .internal_network.proxies[].private_port, .internal_network.proxies[].metrics_port' "${STATE_DIR}/server_config.json")
 
+# Somehow this doesn't work reliably and some ports are still in use sometimes, so wait a bit.
+sleep 3
+
 STORAGE_ENDPOINT="service:tcp:${NODE_HOST}:${STORAGE_PORT}:table_default"
 
 storage_strace=()

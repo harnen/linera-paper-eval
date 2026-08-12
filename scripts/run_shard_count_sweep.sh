@@ -40,6 +40,8 @@ CLIENT_STEP="${CLIENT_STEP:-2}"
 MAX_CLIENTS="${MAX_CLIENTS:-40}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-8}"
 BUILD_PROFILE="${BUILD_PROFILE:-release}"
+SKIP_BUILD="${SKIP_BUILD:-false}"
+SKIP_BINARY_DEPLOY="${SKIP_BINARY_DEPLOY:-false}"
 
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
@@ -49,13 +51,14 @@ SUMMARY_CSV="${OUT_DIR}/summary.csv"
 echo "num_shards,num_clients,requested_bps,committed,failed,achieved_bps,achieved_tps,p25_ms,p50_ms,p95_ms" > "${SUMMARY_CSV}"
 echo "==> Output: ${OUT_DIR}"
 
-skip_build="false"
+# Save experiment config
+env > "${OUT_DIR}/.env"
+
 shard_values="${SHARD_LIST:-$(seq "${MIN_SHARDS}" "${MAX_SHARDS}")}"
 for n in ${shard_values}; do
   echo "==================== NUM_SHARDS=${n} ($(date +%H:%M:%S)) ===================="
   log="${OUT_DIR}/shards_${n}.log"
   set +e
-  SKIP_BUILD="${skip_build}" SKIP_BINARY_DEPLOY="${skip_build}" \
   BUILD_PROFILE="${BUILD_PROFILE}" \
   NUM_SHARDS="${n}" CORES_PER_SHARD="${CORES_PER_SHARD}" RESERVED_CORES="${RESERVED_CORES}" \
   CHAINS_PER_CLIENT="${CHAINS_PER_CLIENT}" TRANSACTIONS_PER_BLOCK="${TRANSACTIONS_PER_BLOCK}" \
@@ -68,7 +71,6 @@ for n in ${shard_values}; do
   if [ "${status}" -ne 0 ]; then
     echo "  find_max_tps.sh exited ${status} for NUM_SHARDS=${n} -- see ${log}" >&2
   fi
-  skip_build="true"  # binaries are unchanged across iterations; only the first needs a build+deploy
 
   set +e
   line="$(grep 'Estimated max sustained throughput:' "${log}" | sed 's/.*throughput: //')"

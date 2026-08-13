@@ -51,7 +51,51 @@ set -euo pipefail
 #                          re-running every lower level (the chain pool is still sized for
 #                          MAX_CLIENTS regardless of where you start)
 #   CLIENT_STEP            (default 1) increment client count by this much per level, to
-#                          cover a wide range in fewer, coarser levels
+#                          cover a wide range in fewer, coarser levels. Ignored when
+#                          CLIENT_STEP_SCHEDULE is set.
+#   CLIENT_STEP_SCHEDULE   (default: just "${CLIENT_STEP}", i.e. the old single-pass ramp)
+#                          space-separated, descending list of client steps for a
+#                          coarse-to-fine search, e.g. "25 5 1". The reported maximum is
+#                          only ever as precise as the *last* step, so a single coarse step
+#                          quantizes the answer to a multiple of that step x BPS_PER_CLIENT
+#                          -- which is exactly what makes a shard sweep's TPS curve look
+#                          artificially staircased. Instead:
+#                            phase 1 walks up by the first (coarse) step until a level fails,
+#                                    bracketing the limit between last-good and first-bad;
+#                            each later phase re-walks that bracket at the next, finer step,
+#                                    tightening it.
+#                          This is strictly cheaper *and* more precise than one fine pass:
+#                          reaching ~100 clients at step 1 costs ~100 levels, while
+#                          "25 5 1" costs ~6 coarse + <=4 + <=4 ~= 14 levels for the same
+#                          final resolution of 1 client (= BPS_PER_CLIENT blocks/s).
+#                          Levels are memoized, so overlapping phases never re-run a level.
+#                          Resolution below one client is not reachable this way: total load
+#                          is NUM_CLIENTS x BPS_PER_CLIENT, so lower BPS_PER_CLIENT if you
+#                          need a finer grid than one client's worth of load.
+#   CONFIRM_STOP_RETRIES   (default 1) when a level is judged bad, re-run it this many times
+#                          before accepting it as the ceiling; the first passing retry wins.
+#                          A single spuriously-bad coarse level would otherwise cap the whole
+#                          search far below the true limit (refinement only ever searches
+#                          *below* first-bad), which biases the result downward -- and unlike
+#                          random noise, that bias does not average out over repeated runs.
+#                          Set to 0 for the old stop-at-first-bad behavior.
+#   SUMMARY_CSV_PATH       (default a throwaway mktemp path) where to write the per-level
+#                          CSV. Set it to keep the full load-vs-latency curve for every
+#                          level probed, not just the single winning level -- that curve is
+#                          the raw data behind the reported maximum.
+#   CLIENT_ARCHIVE_DIR     (default empty) if set, each level's client output (transfers.csv
+#                          + logs) is rsync'd here *as the level finishes*, rather than being
+#                          left to pile up on CLIENT_HOST. Per-client wallet/keystore copies
+#                          are excluded -- they are byte-identical copies of the one admin
+#                          wallet, and at a large chain pool they are by far the biggest
+#                          thing on disk (a 20k-chain wallet+keystore is ~12MB *per client
+#                          process*, so a 130-client level writes ~1.6GB of pure redundancy).
+#   CLEAN_LEVEL_ON_CLIENT  (default true) delete each level's output on CLIENT_HOST once it
+#                          has been harvested, bounding that host's disk use to a single
+#                          level instead of a whole ramp. CLIENT_HOST's results dir is
+#                          typically a ramdisk, and a ramp that fills it does not fail
+#                          cleanly -- it fails as an unrelated-looking `cp: No space left on
+#                          device` mid-level, taking out every remaining shard count.
 #   STOP_NODE_AFTER        (default true)
 #   SKIP_BUILD             (default false) skip `cargo build` entirely and reuse whatever's
 #                          already in target/<profile> -- use when only these scripts
@@ -83,15 +127,19 @@ MIN_ACHIEVED_FRACTION="${MIN_ACHIEVED_FRACTION:-0.8}"
 FAILURES_ONLY="${FAILURES_ONLY:-false}"
 START_CLIENTS="${START_CLIENTS:-1}"
 CLIENT_STEP="${CLIENT_STEP:-1}"
+CLIENT_STEP_SCHEDULE="${CLIENT_STEP_SCHEDULE:-${CLIENT_STEP}}"
+CONFIRM_STOP_RETRIES="${CONFIRM_STOP_RETRIES:-1}"
+CLIENT_ARCHIVE_DIR="${CLIENT_ARCHIVE_DIR:-}"
+CLEAN_LEVEL_ON_CLIENT="${CLEAN_LEVEL_ON_CLIENT:-true}"
 STOP_NODE_AFTER="${STOP_NODE_AFTER:-true}"
 SKIP_BUILD="${SKIP_BUILD:-false}"
 SKIP_BINARY_DEPLOY="${SKIP_BINARY_DEPLOY:-false}"
 
 LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
-LOCAL_SUMMARY_DIR="$(mktemp -d)"
-SUMMARY_CSV="${LOCAL_SUMMARY_DIR}/max_tps_summary.csv"
-echo "num_clients,requested_bps,committed,failed,achieved_bps,achieved_tps,p25_ms,p50_ms,p95_ms,sparta_reserved_cpu_pct,sparta_shard_cpu_pct,client_cpu_pct" > "${SUMMARY_CSV}"
+SUMMARY_CSV="${SUMMARY_CSV_PATH:-$(mktemp -d)/max_tps_summary.csv}"
+mkdir -p "$(dirname "${SUMMARY_CSV}")"
+echo "num_clients,requested_bps,committed,failed,achieved_bps,achieved_tps,p25_ms,p50_ms,p95_ms,sparta_reserved_cpu_pct,sparta_shard_cpu_pct,client_cpu_pct,step,attempt,verdict" > "${SUMMARY_CSV}"
 
 cargo_flags=()
 target_dir="debug"
@@ -228,18 +276,25 @@ cpu_range_utilization_pct() {
 shard_cores_end=$((RESERVED_CORES + NUM_SHARDS * CORES_PER_SHARD - 1))
 
 echo "==> [5/5] Ramping clients (traffic-mode=${TRAFFIC_MODE}, ${RUNTIME_SECONDS}s per level)"
+echo "    step schedule: ${CLIENT_STEP_SCHEDULE} (coarse -> fine), ceiling ${MAX_CLIENTS} clients"
 printf "%-8s %-14s %-10s %-8s %-14s %-14s %-10s %-10s %-10s %-14s %-13s %-12s\n" \
   "clients" "requested_bps" "committed" "failed" "achieved_bps" "achieved_tps" \
   "p25_ms" "p50_ms" "p95_ms" "sparta_rsvd%" "sparta_shard%" "client_cpu%"
 
 baseline_p95=""
-max_good_clients=0
-declare -A LEVEL_LINE
+declare -A LEVEL_LINE     # n -> the printf'd row of the level's *accepted* measurement
+declare -A LEVEL_VERDICT  # n -> "good" | "bad", memoizing levels across search phases
 
-for n in $(seq "${START_CLIENTS}" "${CLIENT_STEP}" "${MAX_CLIENTS}"); do
-  requested_bps=$((n * BPS_PER_CLIENT))
-  experiment_name="level_${RUN_ID}_${n}"
+# Runs one load level at ${1} clients (attempt ${2}, probed at step ${3}), prints its row and
+# appends it to the per-level CSV. Sets LEVEL_STOP_REASON to "" when the level sustained the
+# load, or to a human-readable reason when it did not.
+measure_level() {
+  local n="$1" attempt="$2" step="$3"
+  local requested_bps=$((n * BPS_PER_CLIENT))
+  local experiment_name="level_${RUN_ID}_${n}_a${attempt}"
+  local remote_level_dir="${REMOTE_DIR}/results/lite_benchmark/${experiment_name}"
 
+  local sparta_stat_before client_stat_before sparta_stat_after client_stat_after
   sparta_stat_before="$(read_cpu_stat_all "${SPARTA_HOST}")"
   client_stat_before="$(read_cpu_stat_all "${CLIENT_HOST}")"
   ssh "${CLIENT_HOST}" "cd ${REMOTE_DIR} && \
@@ -251,18 +306,36 @@ for n in $(seq "${START_CLIENTS}" "${CLIENT_STEP}" "${MAX_CLIENTS}"); do
     ./scripts/run_lite_benchmark_parallel.sh" > /dev/null
   sparta_stat_after="$(read_cpu_stat_all "${SPARTA_HOST}")"
   client_stat_after="$(read_cpu_stat_all "${CLIENT_HOST}")"
+  local sparta_reserved_pct sparta_shard_pct client_cpu_pct
   sparta_reserved_pct="$(cpu_range_utilization_pct "${sparta_stat_before}" "${sparta_stat_after}" 0 $((RESERVED_CORES - 1)))"
   sparta_shard_pct="$(cpu_range_utilization_pct "${sparta_stat_before}" "${sparta_stat_after}" "${RESERVED_CORES}" "${shard_cores_end}")"
   client_cpu_pct="$(cpu_range_utilization_pct "${client_stat_before}" "${client_stat_after}" 0 9999)"
 
-  level_dir="$(mktemp -d)"
-  scp -r "${CLIENT_HOST}:${REMOTE_DIR}/results/lite_benchmark/${experiment_name}/client_*" "${level_dir}/" > /dev/null
+  # Harvest this level and free it on CLIENT_HOST right away -- see CLIENT_ARCHIVE_DIR /
+  # CLEAN_LEVEL_ON_CLIENT above for why per-level (not per-sweep) cleanup matters. The
+  # wallet/keystore excludes are what make this cheap: they are per-client copies of one
+  # file and carry no per-level information.
+  local level_dir keep_level_dir=false
+  if [ -n "${CLIENT_ARCHIVE_DIR}" ]; then
+    level_dir="${CLIENT_ARCHIVE_DIR}/${experiment_name}"
+    keep_level_dir=true
+    mkdir -p "${level_dir}"
+  else
+    level_dir="$(mktemp -d)"
+  fi
+  rsync -az --exclude='wallet.json' --exclude='keystore.json' \
+    "${CLIENT_HOST}:${remote_level_dir}/" "${level_dir}/" || \
+    echo "  warning: failed to fetch level ${n} (attempt ${attempt}) from ${CLIENT_HOST}" >&2
+  if [ "${CLEAN_LEVEL_ON_CLIENT}" = "true" ]; then
+    ssh "${CLIENT_HOST}" "rm -rf ${remote_level_dir}" || \
+      echo "  warning: failed to clean up ${remote_level_dir} on ${CLIENT_HOST}" >&2
+  fi
 
-  durations_file="${level_dir}/durations.txt"
-  : > "${durations_file}"
-  committed=0
-  failed=0
-  total_tx=0
+  # Derived from transfers.csv, so it is deliberately kept out of level_dir -- level_dir may
+  # be the permanent archive, and re-deriving this is far cheaper than storing it per level.
+  local durations_file
+  durations_file="$(mktemp)"
+  local committed=0 failed=0 total_tx=0 csv
   for csv in "${level_dir}"/client_*/transfers.csv; do
     [ -f "${csv}" ] || continue
     committed=$((committed + $(awk -F, 'NR>1 && $4=="committed"' "${csv}" | wc -l)))
@@ -272,6 +345,7 @@ for n in $(seq "${START_CLIENTS}" "${CLIENT_STEP}" "${MAX_CLIENTS}"); do
   done
   sort -n -o "${durations_file}" "${durations_file}"
 
+  local p25_us p50_us p95_us p25_ms p50_ms p95_ms achieved_bps achieved_tps
   p25_us="$(percentile "${durations_file}" 25)"
   p50_us="$(percentile "${durations_file}" 50)"
   p95_us="$(percentile "${durations_file}" 95)"
@@ -284,40 +358,106 @@ for n in $(seq "${START_CLIENTS}" "${CLIENT_STEP}" "${MAX_CLIENTS}"); do
   achieved_bps="$(awk -v c="${committed}" -v t="${RUNTIME_SECONDS}" 'BEGIN{printf "%.1f", c/t}')"
   achieved_tps="$(awk -v c="${total_tx}" -v t="${RUNTIME_SECONDS}" 'BEGIN{printf "%.1f", c/t}')"
 
+  local row
   row="$(printf "%-8s %-14s %-10s %-8s %-14s %-14s %-10s %-10s %-10s %-14s %-13s %-12s" \
     "${n}" "${requested_bps}" "${committed}" "${failed}" "${achieved_bps}" "${achieved_tps}" \
     "${p25_ms}" "${p50_ms}" "${p95_ms}" "${sparta_reserved_pct}" "${sparta_shard_pct}" "${client_cpu_pct}")"
-  echo "${row}"
-  echo "${n},${requested_bps},${committed},${failed},${achieved_bps},${achieved_tps},${p25_ms},${p50_ms},${p95_ms},${sparta_reserved_pct},${sparta_shard_pct},${client_cpu_pct}" >> "${SUMMARY_CSV}"
-  LEVEL_LINE[$n]="${row}"
 
-  rm -rf "${level_dir}"
-
-  if [ "${n}" -eq "${START_CLIENTS}" ]; then
+  # The baseline p95 every later level is compared against is the *first level measured in
+  # this run*, whatever the search happens to probe first -- not a fixed client count.
+  if [ -z "${baseline_p95}" ]; then
     baseline_p95="${p95_ms}"
   fi
 
-  stop_reason=""
+  LEVEL_STOP_REASON=""
   if [ "${failed}" -gt 0 ]; then
-    stop_reason="${failed} failed block(s)"
+    LEVEL_STOP_REASON="${failed} failed block(s)"
   elif [ "${FAILURES_ONLY}" != "true" ] && awk -v p="${p95_ms}" -v b="${baseline_p95}" -v f="${LATENCY_DEGRADATION_FACTOR}" 'BEGIN{exit !(b>0 && p>b*f)}'; then
-    stop_reason="p95 latency ${p95_ms}ms exceeds ${LATENCY_DEGRADATION_FACTOR}x baseline (${baseline_p95}ms)"
+    LEVEL_STOP_REASON="p95 latency ${p95_ms}ms exceeds ${LATENCY_DEGRADATION_FACTOR}x baseline (${baseline_p95}ms)"
   elif [ "${FAILURES_ONLY}" != "true" ] && awk -v a="${achieved_bps}" -v r="${requested_bps}" -v f="${MIN_ACHIEVED_FRACTION}" 'BEGIN{exit !(a < r*f)}'; then
-    stop_reason="achieved ${achieved_bps} BPS is below ${MIN_ACHIEVED_FRACTION}x requested ${requested_bps}"
+    LEVEL_STOP_REASON="achieved ${achieved_bps} BPS is below ${MIN_ACHIEVED_FRACTION}x requested ${requested_bps}"
   fi
 
-  if [ -n "${stop_reason}" ]; then
-    echo
-    echo "==> Stopping ramp at ${n} client(s): ${stop_reason}"
-    break
+  local verdict="good"
+  [ -n "${LEVEL_STOP_REASON}" ] && verdict="bad"
+  printf "%s %-6s %s\n" "${row}" "${verdict}" "${LEVEL_STOP_REASON}"
+  echo "${n},${requested_bps},${committed},${failed},${achieved_bps},${achieved_tps},${p25_ms},${p50_ms},${p95_ms},${sparta_reserved_pct},${sparta_shard_pct},${client_cpu_pct},${step},${attempt},${verdict}" >> "${SUMMARY_CSV}"
+  MEASURED_ROW="${row}"
+
+  rm -f "${durations_file}"
+  [ "${keep_level_dir}" = true ] || rm -rf "${level_dir}"
+}
+
+# Memoized "does ${1} clients sustain the load?" -- returns 0 for good, 1 for bad. A bad
+# verdict is re-tested up to CONFIRM_STOP_RETRIES times before it is believed (see above).
+level_is_good() {
+  local n="$1" step="$2" attempt=0
+  if [ -n "${LEVEL_VERDICT[$n]:-}" ]; then
+    [ "${LEVEL_VERDICT[$n]}" = "good" ]
+    return
   fi
-  max_good_clients="${n}"
+  while :; do
+    measure_level "${n}" "${attempt}" "${step}"
+    if [ -z "${LEVEL_STOP_REASON}" ]; then
+      LEVEL_VERDICT[$n]="good"
+      LEVEL_LINE[$n]="${MEASURED_ROW}"
+      return 0
+    fi
+    if [ "${attempt}" -ge "${CONFIRM_STOP_RETRIES}" ]; then
+      LEVEL_VERDICT[$n]="bad"
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    echo "  level ${n} failed (${LEVEL_STOP_REASON}) -- re-testing (${attempt}/${CONFIRM_STOP_RETRIES}) before accepting it as the ceiling"
+  done
+}
+
+# Coarse-to-fine search: keep a bracket [lower_good, upper_bad) around the limit and tighten
+# it one step size at a time. lower_good=0 means "nothing has passed yet"; upper_bad is kept
+# one past MAX_CLIENTS while nothing has failed yet, so the ceiling is treated as an
+# unexplored bound rather than a known-bad level.
+lower_good=0
+upper_bad=$((MAX_CLIENTS + 1))
+first_phase=true
+
+for step in ${CLIENT_STEP_SCHEDULE}; do
+  if [ "${step}" -lt 1 ]; then
+    echo "CLIENT_STEP_SCHEDULE entries must be >= 1, got '${step}'" >&2
+    exit 1
+  fi
+  if [ "${first_phase}" = true ]; then
+    n="${START_CLIENTS}"
+    first_phase=false
+  else
+    # Everything at or below lower_good already passed, and upper_bad already failed, so
+    # only the strict interior of the bracket is worth probing.
+    n=$((lower_good + step))
+    if [ $((lower_good + 1)) -ge "${upper_bad}" ]; then
+      break  # bracket is tight to a single client; no finer step can say anything new
+    fi
+    echo "==> Refining at step ${step} within (${lower_good}, ${upper_bad}) clients"
+  fi
+  while [ "${n}" -le "${MAX_CLIENTS}" ] && [ "${n}" -lt "${upper_bad}" ]; do
+    if level_is_good "${n}" "${step}"; then
+      lower_good="${n}"
+    else
+      upper_bad="${n}"
+      break
+    fi
+    n=$((n + step))
+  done
 done
 
 echo
-if [ "${max_good_clients}" -eq 0 ]; then
-  echo "==> Even a single client showed degraded/failed behavior -- see ${SUMMARY_CSV}"
+if [ "${lower_good}" -eq 0 ]; then
+  echo "==> Even the first level (${START_CLIENTS} client(s)) showed degraded/failed behavior -- see ${SUMMARY_CSV}"
 else
-  echo "==> Estimated max sustained throughput: ${LEVEL_LINE[${max_good_clients}]}"
+  if [ "${upper_bad}" -gt "${MAX_CLIENTS}" ]; then
+    echo "==> WARNING: no level failed up to the MAX_CLIENTS=${MAX_CLIENTS} ceiling -- the"
+    echo "    reported maximum is bounded by the ceiling, not by the validator. Raise MAX_CLIENTS."
+  else
+    echo "==> Limit bracketed to (${lower_good}, ${upper_bad}) clients: resolution is $((BPS_PER_CLIENT * (upper_bad - lower_good))) blocks/s"
+  fi
+  echo "==> Estimated max sustained throughput: ${LEVEL_LINE[${lower_good}]}"
 fi
 echo "==> Full per-level results: ${SUMMARY_CSV}"

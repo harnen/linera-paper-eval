@@ -91,7 +91,7 @@ else
   rsync -az --progress "${bin_src}/linera" "${bin_src}/linera-server" "${bin_src}/linera-proxy" \
     "${bin_src}/linera-storage-server" "${SPARTA_HOST}:${REMOTE_DIR}/bin/"
 fi
-scp "${LOCAL_DIR}/scripts/run_node.sh" "${LOCAL_DIR}/scripts/stop_node.sh" \
+scp "${LOCAL_DIR}/scripts/run_validators.sh" "${LOCAL_DIR}/scripts/stop_node.sh" \
   "${SPARTA_HOST}:${REMOTE_DIR}/scripts/"
 ssh "${SPARTA_HOST}" "chmod +x ${REMOTE_DIR}/bin/* ${REMOTE_DIR}/scripts/*.sh"
 
@@ -112,8 +112,8 @@ ssh "${CLIENT_HOST}" "chmod +x ${REMOTE_DIR}/bin/* ${REMOTE_DIR}/scripts/*.sh"
 echo "==> [3/3] Starting validator on ${SPARTA_HOST} (public address ${SPARTA_ADDRESS}:${PROXY_PUBLIC_PORT})"
 ssh "${SPARTA_HOST}" "STATE_DIR=${REMOTE_DIR}/state ${REMOTE_DIR}/scripts/stop_node.sh" 2>/dev/null || true
 ssh "${SPARTA_HOST}" \
-  "STATE_DIR=${REMOTE_DIR}/state NODE_HOST=${SPARTA_ADDRESS} PROXY_PUBLIC_PORT=${PROXY_PUBLIC_PORT} \
-   START_FAUCET=false ${REMOTE_DIR}/scripts/run_node.sh"
+  "STATE_DIR=${REMOTE_DIR}/state NODE_HOST=${SPARTA_ADDRESS} PROXY_PUBLIC_PORT_BASE=${PROXY_PUBLIC_PORT} \
+   START_FAUCET=false ${REMOTE_DIR}/scripts/run_validators.sh"
 sleep 3
 
 cleanup_node() {
@@ -170,8 +170,8 @@ for mode in ${traffic_modes}; do
     continue
   fi
   total="$(tail -n +2 "${csv}" | wc -l)"
-  committed="$(awk -F, 'NR>1 && $4=="committed"' "${csv}" | wc -l)"
-  failed="$(awk -F, 'NR>1 && $4=="failed"' "${csv}" | wc -l)"
+  committed="$(awk -F, 'NR>1 && $5=="committed"' "${csv}" | wc -l)"
+  failed="$(awk -F, 'NR>1 && $5=="failed"' "${csv}" | wc -l)"
   echo "  ${mode}: ${committed}/${total} committed, ${failed} failed (${csv})"
   if [ "${total}" -eq 0 ] || [ "${failed}" -gt 0 ]; then
     overall_pass=false

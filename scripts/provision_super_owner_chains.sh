@@ -69,7 +69,7 @@ export LINERA_STORAGE="${LINERA_STORAGE:-rocksdb:${CLIENT_DIR}/wallet-client.db}
 echo "==> Initializing local client storage from ${GENESIS_PATH}"
 linera storage initialize --storage "${LINERA_STORAGE}" --genesis "${GENESIS_PATH}"
 
-# create-genesis-config (see run_node.sh) always creates one non-admin root chain in
+# create-genesis-config (see run_validators.sh) always creates one non-admin root chain in
 # addition to the admin chain -- needed so the faucet flow (a different workflow, sharing
 # the same genesis) doesn't panic. That pre-existing chain is a regular (non-super-owner)
 # chain, so it can't use linera-lite-benchmark's Round::Fast path: any client assigned it

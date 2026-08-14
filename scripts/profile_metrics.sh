@@ -10,26 +10,26 @@ set -euo pipefail
 # where time (and thus CPU) is going -- exactly the kind of report to hand to devs, with no
 # code changes, no perf, no root.
 #
-# Assumes run_node.sh's usual layout: STATE_DIR/server_config.json has proxy+shard ports.
+# Assumes run_validators.sh's usual layout: STATE_DIR/server_config.json has proxy+shard ports.
 # Metrics endpoints are internal (localhost-only from sparta's perspective) so this is run
 # entirely over SSH into the node host -- the client's single open port is untouched.
 #
 # Configuration (env vars):
 #   NODE_HOST          (default sparta) ssh alias for the validator machine
 #   CLIENT_HOST         (default yiannis-testbed) ssh alias for the load-generating client
-#   NODE_ADDRESS        (default 193.60.241.98) public IP passed to run_node.sh
+#   NODE_ADDRESS        (default 193.60.241.98) public IP passed to run_validators.sh
 #   REMOTE_DIR           (default linera) remote checkout dir on both hosts
 #   NUM_SHARDS           (default 19)
-#   CORES_PER_SHARD      (default 0 = unpinned) passed through to run_node.sh -- set >0 to
+#   CORES_PER_SHARD      (default 0 = unpinned) passed through to run_validators.sh -- set >0 to
 #                          test pinned configurations (see RESERVED_CORES/STORAGE_CORES below)
-#   RESERVED_CORES       (default 2) passed through to run_node.sh (proxy's cores, only
+#   RESERVED_CORES       (default 2) passed through to run_validators.sh (proxy's cores, only
 #                          used when CORES_PER_SHARD > 0)
 #   STORAGE_CORES        (default 0 = shares RESERVED_CORES, old behavior) passed through to
-#                          run_node.sh -- dedicated storage-server cores, only used when
+#                          run_validators.sh -- dedicated storage-server cores, only used when
 #                          CORES_PER_SHARD > 0; set close to NUM_SHARDS to test whether
 #                          storage (a single shared in-memory backend) is contended
 #   SHARD_TOKIO_THREADS  (default 0 = same as CORES_PER_SHARD, old behavior) passed through
-#                          to run_node.sh -- lets a shard have more async worker threads
+#                          to run_validators.sh -- lets a shard have more async worker threads
 #                          than pinned cores, to test whether the 1:1 thread/core cap is
 #                          starving shards that own many concurrently-active chains
 #   RUNTIME_SECONDS      (default 30) duration of the load-generating run
@@ -67,7 +67,7 @@ ssh "${NODE_HOST}" \
   "STATE_DIR=${REMOTE_DIR}/state NODE_HOST=${NODE_ADDRESS} NUM_SHARDS=${NUM_SHARDS} \
    CORES_PER_SHARD=${CORES_PER_SHARD} RESERVED_CORES=${RESERVED_CORES} STORAGE_CORES=${STORAGE_CORES} \
    SHARD_TOKIO_THREADS=${SHARD_TOKIO_THREADS} \
-   START_FAUCET=false ${REMOTE_DIR}/scripts/run_node.sh" \
+   START_FAUCET=false ${REMOTE_DIR}/scripts/run_validators.sh" \
   > "${OUT_DIR}/node_start.log" 2>&1
 cleanup() {
   echo "==> Stopping validator"

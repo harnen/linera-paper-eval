@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs the eval client against a real, remote validator started by run_node.sh
+# Runs the eval client against a real, remote validator started by run_validators.sh
 # on a *different* machine. No validator binaries needed here, just `linera`
 # and `linera-paper-eval`.
 #
 # Configuration (env vars):
-#   FAUCET_URL       (required) e.g. http://<testbed-host>:8080, printed by run_node.sh.
+#   FAUCET_URL       (required) e.g. http://<testbed-host>:8080, printed by run_validators.sh.
 #                    If the testbed only exposes the faucet locally (see
 #                    scripts/open_faucet_tunnel.sh), first open that tunnel, then set
 #                    this to http://127.0.0.1:<LOCAL_FAUCET_PORT> instead. Either way,

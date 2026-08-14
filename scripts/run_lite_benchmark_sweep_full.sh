@@ -18,10 +18,10 @@ set -euo pipefail
 #   LINERA_SRC             (default ~/work/linera/linera-protocol)
 #   NUM_SHARDS             (default 19)
 #   CORES_PER_SHARD        (default 2) 0 disables CPU pinning entirely
-#   RESERVED_CORES         (default 2) reserved for storage-server + proxy (see run_node.sh)
+#   RESERVED_CORES         (default 2) reserved for storage-server + proxy (see run_validators.sh)
 #   STORAGE_TOKIO_THREADS  (default 0 = storage-server's own default) passed straight to
-#                          run_node.sh -- caps storage-server's Tokio worker-thread count
-#                          independent of CPU pinning; see run_node.sh for why this matters
+#                          run_validators.sh -- caps storage-server's Tokio worker-thread count
+#                          independent of CPU pinning; see run_validators.sh for why this matters
 #                          (oversized default thread count causes excess futex/parking
 #                          overhead relative to storage-server's actual per-call work)
 #   STOP_NODE_AFTER        (default true)
@@ -104,7 +104,7 @@ else
   rsync -az --progress "${bin_src}/linera" "${bin_src}/linera-server" "${bin_src}/linera-proxy" \
     "${bin_src}/linera-storage-server" "${SPARTA_HOST}:${REMOTE_DIR}/bin/"
 fi
-scp "${LOCAL_DIR}/scripts/run_node.sh" "${LOCAL_DIR}/scripts/stop_node.sh" \
+scp "${LOCAL_DIR}/scripts/run_validators.sh" "${LOCAL_DIR}/scripts/stop_node.sh" \
   "${SPARTA_HOST}:${REMOTE_DIR}/scripts/"
 ssh "${SPARTA_HOST}" "chmod +x ${REMOTE_DIR}/bin/* ${REMOTE_DIR}/scripts/*.sh"
 
@@ -124,10 +124,10 @@ ssh "${CLIENT_HOST}" "chmod +x ${REMOTE_DIR}/bin/* ${REMOTE_DIR}/scripts/*.sh"
 echo "==> [3/5] Starting validator on ${SPARTA_HOST}: ${NUM_SHARDS} shards x ${CORES_PER_SHARD} cores + ${RESERVED_CORES} reserved"
 ssh "${SPARTA_HOST}" "STATE_DIR=${REMOTE_DIR}/state ${REMOTE_DIR}/scripts/stop_node.sh" 2>/dev/null || true
 ssh "${SPARTA_HOST}" \
-  "STATE_DIR=${REMOTE_DIR}/state NODE_HOST=${SPARTA_ADDRESS} PROXY_PUBLIC_PORT=${PROXY_PUBLIC_PORT} \
+  "STATE_DIR=${REMOTE_DIR}/state NODE_HOST=${SPARTA_ADDRESS} PROXY_PUBLIC_PORT_BASE=${PROXY_PUBLIC_PORT} \
    NUM_SHARDS=${NUM_SHARDS} CORES_PER_SHARD=${CORES_PER_SHARD} RESERVED_CORES=${RESERVED_CORES} \
    STORAGE_TOKIO_THREADS=${STORAGE_TOKIO_THREADS} START_FAUCET=false \
-   ${REMOTE_DIR}/scripts/run_node.sh"
+   ${REMOTE_DIR}/scripts/run_validators.sh"
 sleep 3
 
 cleanup_node() {

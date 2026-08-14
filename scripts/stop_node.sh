@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Stops everything started by run_node.sh.
+# Stops everything started by run_validators.sh.
 STATE_DIR="${STATE_DIR:-/var/tmp/linera-node}"
 
 if [ ! -f "${STATE_DIR}/pids" ]; then

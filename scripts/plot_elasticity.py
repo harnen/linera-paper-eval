@@ -100,7 +100,7 @@ def read_transfers(transfers_path):
     with open(transfers_path) as f:
         next(f, None)
         for line in f:
-            chain_id, ts, num_tx, result, duration_micros = line.rstrip("\n").split(",")
+            chain_id, ts, num_tx, num_bundles, result, duration_micros = line.rstrip("\n").split(",")
             rows.append((float(ts), float(duration_micros) / 1000.0, result == "committed"))
     rows.sort()
     return rows

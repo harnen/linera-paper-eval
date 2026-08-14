@@ -64,7 +64,7 @@ proxy's internal/metrics ports never leave the testbed at all.
 ```bash
 # On the testbed (validator machine), reachable at e.g. 10.0.0.5, with 4001 the one
 # port your firewall opens directly (SSH on 22 is assumed available separately):
-NODE_HOST=10.0.0.5 PROXY_PUBLIC_PORT=4001 ./scripts/run_node.sh
+NODE_HOST=10.0.0.5 PROXY_PUBLIC_PORT_BASE=4001 ./scripts/run_validators.sh
 # prints the faucet's local port and the tunnel command to use
 
 # On the client machine, tunnel the faucet over SSH (leave this running):
@@ -74,8 +74,8 @@ SSH_HOST=10.0.0.5 REMOTE_FAUCET_PORT=8080 ./scripts/open_faucet_tunnel.sh &
 FAUCET_URL=http://127.0.0.1:8080 ./scripts/run_client.sh
 ```
 
-`run_node.sh` starts a `linera-storage-server` in `memory` mode (RAM-backed, shared by all
-shards), the shard(s), the proxy (public port pinned to `PROXY_PUBLIC_PORT`, reachable at
+`run_validators.sh` starts a `linera-storage-server` in `memory` mode (RAM-backed, shared by all
+shards), the shard(s), the proxy (public port pinned to `PROXY_PUBLIC_PORT_BASE`, reachable at
 `NODE_HOST`), and a faucet bound only locally. `NUM_SHARDS`, `STORAGE_PORT`, `FAUCET_PORT`,
 `STATE_DIR` etc. are overridable via env vars (see the top of the script). Stop everything
 with `scripts/stop_node.sh`.
@@ -97,7 +97,7 @@ built from the fork pinned in `Dockerfile.linera-paper-eval-builder-base`
 
 It only works on chains owned by a single **super owner** (so every block can use the
 one-round-trip `Round::Fast` path), which also means chain setup never needs a faucet: the
-node's `admin_wallet.json` (already produced by `run_node.sh`) owns the genesis chain outright
+node's `admin_wallet.json` (already produced by `run_validators.sh`) owns the genesis chain outright
 and can fund children directly via `linera open-chain --super-owner`.
 
 ```bash
@@ -121,9 +121,11 @@ LINERA_WALLET=./admin_wallet.json LINERA_KEYSTORE=./admin_keystore.json \
   ./scripts/run_lite_benchmark_sweep.sh
 ```
 
-Each run writes `transfers.csv` (`chain_id,ts_within_experiment,num_tx,result,duration_micros`
-— the same schema `linera-paper-eval` uses) plus a log with the live "N blocks/s committed"
-line, under `$EVAL_OUTPUT_DIR/lite_benchmark/<experiment_name>/`.
+Each run writes `transfers.csv`
+(`chain_id,ts_within_experiment,num_tx,num_bundles,result,duration_micros` — a superset of the
+schema `linera-paper-eval` uses; `num_bundles` is the incoming message bundles the block
+drained) plus a log with the live "N blocks/s committed" line, under
+`$EVAL_OUTPUT_DIR/lite_benchmark/<experiment_name>/`.
 
 `run_client.sh`/`linera-paper-eval` remain available as the full-fidelity fallback (the one
 that still models real `ChainClient` overhead), useful for comparing against the lite client's

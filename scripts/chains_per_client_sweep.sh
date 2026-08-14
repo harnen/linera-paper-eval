@@ -53,7 +53,7 @@ done
 pool_size=$((NUM_CLIENTS * max_chains_per_client))
 
 echo "==> Deploying scripts (binaries assumed already current on both hosts)"
-scp "${LOCAL_DIR}/scripts/run_node.sh" "${LOCAL_DIR}/scripts/stop_node.sh" \
+scp "${LOCAL_DIR}/scripts/run_validators.sh" "${LOCAL_DIR}/scripts/stop_node.sh" \
   "${SPARTA_HOST}:${REMOTE_DIR}/scripts/" > /dev/null
 scp "${LOCAL_DIR}/scripts/provision_super_owner_chains.sh" \
   "${LOCAL_DIR}/scripts/run_lite_benchmark_parallel.sh" \
@@ -64,9 +64,9 @@ ssh "${CLIENT_HOST}" "chmod +x ${REMOTE_DIR}/scripts/*.sh"
 echo "==> Starting validator on ${SPARTA_HOST}: ${NUM_SHARDS} shards, CORES_PER_SHARD=${CORES_PER_SHARD}, STORAGE_TOKIO_THREADS=${STORAGE_TOKIO_THREADS}"
 ssh "${SPARTA_HOST}" "STATE_DIR=${REMOTE_DIR}/state ${REMOTE_DIR}/scripts/stop_node.sh" 2>/dev/null || true
 ssh "${SPARTA_HOST}" \
-  "STATE_DIR=${REMOTE_DIR}/state NODE_HOST=${SPARTA_ADDRESS} PROXY_PUBLIC_PORT=${PROXY_PUBLIC_PORT} \
+  "STATE_DIR=${REMOTE_DIR}/state NODE_HOST=${SPARTA_ADDRESS} PROXY_PUBLIC_PORT_BASE=${PROXY_PUBLIC_PORT} \
    NUM_SHARDS=${NUM_SHARDS} CORES_PER_SHARD=${CORES_PER_SHARD} STORAGE_TOKIO_THREADS=${STORAGE_TOKIO_THREADS} \
-   START_FAUCET=false ${REMOTE_DIR}/scripts/run_node.sh"
+   START_FAUCET=false ${REMOTE_DIR}/scripts/run_validators.sh"
 sleep 3
 
 cleanup_node() {
@@ -126,10 +126,10 @@ for chains_per_client in ${CHAINS_PER_CLIENT_VALUES}; do
   total_tx=0
   for csv in "${level_dir}"/client_*/transfers.csv; do
     [ -f "${csv}" ] || continue
-    committed=$((committed + $(awk -F, 'NR>1 && $4=="committed"' "${csv}" | wc -l)))
-    failed=$((failed + $(awk -F, 'NR>1 && $4=="failed"' "${csv}" | wc -l)))
-    total_tx=$((total_tx + $(awk -F, 'NR>1 && $4=="committed" {s+=$3} END{print s+0}' "${csv}")))
-    awk -F, 'NR>1 && $4=="committed" { print $5 }' "${csv}" >> "${durations_file}"
+    committed=$((committed + $(awk -F, 'NR>1 && $5=="committed"' "${csv}" | wc -l)))
+    failed=$((failed + $(awk -F, 'NR>1 && $5=="failed"' "${csv}" | wc -l)))
+    total_tx=$((total_tx + $(awk -F, 'NR>1 && $5=="committed" {s+=$3} END{print s+0}' "${csv}")))
+    awk -F, 'NR>1 && $5=="committed" { print $6 }' "${csv}" >> "${durations_file}"
   done
   sort -n -o "${durations_file}" "${durations_file}"
 

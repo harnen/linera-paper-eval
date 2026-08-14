@@ -23,12 +23,18 @@ set -euo pipefail
 #   PROXY_PUBLIC_PORT      (default 4001)
 #   BUILD_PROFILE          (default debug) debug | release
 #   LINERA_SRC             (default ~/work/linera/linera-protocol)
-#   NUM_SHARDS             (default 19)
-#   CORES_PER_SHARD        (default 2) 0 disables CPU pinning entirely
-#   RESERVED_CORES         (default 2) reserved for storage-server + proxy (see run_node.sh)
+#   NUM_SHARDS             (default 19) shards *per validator*
+#   NUM_VALIDATORS         (default 1) committee size. The validator(s) are always started by
+#                          run_validators.sh, for every count including 1 -- so an n=1 baseline
+#                          and the n>1 points of a validator sweep come from the same code
+#                          path, rather than from two different launchers.
+#   CORES_PER_SHARD        (default 2) 0 disables CPU pinning entirely. Each validator gets its
+#                          own non-overlapping block of NUM_SHARDS*CORES_PER_SHARD cores, so
+#                          per-validator CPU is constant as the committee grows.
+#   RESERVED_CORES         (default 2) reserved for storage-server + proxy (see run_validators.sh)
 #   STORAGE_TOKIO_THREADS  (default 0 = storage-server's own default) passed straight to
-#                          run_node.sh -- caps storage-server's Tokio worker-thread count
-#                          independent of CPU pinning; see run_node.sh for why this matters
+#                          run_validators.sh -- caps storage-server's Tokio worker-thread count
+#                          independent of CPU pinning; see run_validators.sh for why this matters
 #                          (oversized default thread count causes excess futex/parking
 #                          overhead relative to storage-server's actual per-call work)
 #   CHAINS_PER_CLIENT      (default 5)
@@ -113,6 +119,7 @@ PROXY_PUBLIC_PORT="${PROXY_PUBLIC_PORT:-4001}"
 BUILD_PROFILE="${BUILD_PROFILE:-debug}"
 LINERA_SRC="${LINERA_SRC:-$HOME/work/linera/linera-protocol}"
 NUM_SHARDS="${NUM_SHARDS:-19}"
+NUM_VALIDATORS="${NUM_VALIDATORS:-1}"
 CORES_PER_SHARD="${CORES_PER_SHARD:-2}"
 RESERVED_CORES="${RESERVED_CORES:-2}"
 STORAGE_TOKIO_THREADS="${STORAGE_TOKIO_THREADS:-0}"
@@ -172,7 +179,7 @@ else
   rsync -az --progress "${bin_src}/linera" "${bin_src}/linera-server" "${bin_src}/linera-proxy" \
     "${bin_src}/linera-storage-server" "${SPARTA_HOST}:${REMOTE_DIR}/bin/"
 fi
-scp "${LOCAL_DIR}/scripts/run_node.sh" "${LOCAL_DIR}/scripts/stop_node.sh" \
+scp "${LOCAL_DIR}/scripts/run_validators.sh" "${LOCAL_DIR}/scripts/stop_node.sh" \
   "${SPARTA_HOST}:${REMOTE_DIR}/scripts/"
 ssh "${SPARTA_HOST}" "chmod +x ${REMOTE_DIR}/bin/* ${REMOTE_DIR}/scripts/*.sh"
 
@@ -188,13 +195,14 @@ scp "${LOCAL_DIR}/scripts/provision_super_owner_chains.sh" \
   "${CLIENT_HOST}:${REMOTE_DIR}/scripts/"
 ssh "${CLIENT_HOST}" "chmod +x ${REMOTE_DIR}/bin/* ${REMOTE_DIR}/scripts/*.sh"
 
-echo "==> [3/5] Starting validator on ${SPARTA_HOST}: ${NUM_SHARDS} shards x ${CORES_PER_SHARD} cores + ${RESERVED_CORES} reserved"
+echo "==> [3/5] Starting ${NUM_VALIDATORS} validator(s) on ${SPARTA_HOST}: ${NUM_SHARDS} shards x ${CORES_PER_SHARD} cores each + ${RESERVED_CORES} reserved"
 ssh "${SPARTA_HOST}" "STATE_DIR=${REMOTE_DIR}/state ${REMOTE_DIR}/scripts/stop_node.sh" 2>/dev/null || true
 ssh "${SPARTA_HOST}" \
-  "STATE_DIR=${REMOTE_DIR}/state NODE_HOST=${SPARTA_ADDRESS} PROXY_PUBLIC_PORT=${PROXY_PUBLIC_PORT} \
+  "STATE_DIR=${REMOTE_DIR}/state NODE_HOST=${SPARTA_ADDRESS} PROXY_PUBLIC_PORT_BASE=${PROXY_PUBLIC_PORT} \
+   NUM_VALIDATORS=${NUM_VALIDATORS} \
    NUM_SHARDS=${NUM_SHARDS} CORES_PER_SHARD=${CORES_PER_SHARD} RESERVED_CORES=${RESERVED_CORES} \
    STORAGE_TOKIO_THREADS=${STORAGE_TOKIO_THREADS} START_FAUCET=false \
-   ${REMOTE_DIR}/scripts/run_node.sh"
+   ${REMOTE_DIR}/scripts/run_validators.sh"
 sleep 3
 
 cleanup_node() {
@@ -273,7 +281,10 @@ cpu_range_utilization_pct() {
   '
 }
 
-shard_cores_end=$((RESERVED_CORES + NUM_SHARDS * CORES_PER_SHARD - 1))
+# Spans every validator's shard block, not just the first: run_validators.sh lays the
+# committee out as NUM_VALIDATORS contiguous blocks of NUM_SHARDS*CORES_PER_SHARD cores
+# starting at RESERVED_CORES, so the whole committee's shard CPU is one range.
+shard_cores_end=$((RESERVED_CORES + NUM_VALIDATORS * NUM_SHARDS * CORES_PER_SHARD - 1))
 
 echo "==> [5/5] Ramping clients (traffic-mode=${TRAFFIC_MODE}, ${RUNTIME_SECONDS}s per level)"
 echo "    step schedule: ${CLIENT_STEP_SCHEDULE} (coarse -> fine), ceiling ${MAX_CLIENTS} clients"
@@ -338,10 +349,10 @@ measure_level() {
   local committed=0 failed=0 total_tx=0 csv
   for csv in "${level_dir}"/client_*/transfers.csv; do
     [ -f "${csv}" ] || continue
-    committed=$((committed + $(awk -F, 'NR>1 && $4=="committed"' "${csv}" | wc -l)))
-    failed=$((failed + $(awk -F, 'NR>1 && $4=="failed"' "${csv}" | wc -l)))
-    total_tx=$((total_tx + $(awk -F, 'NR>1 && $4=="committed" {s+=$3} END{print s+0}' "${csv}")))
-    awk -F, 'NR>1 && $4=="committed" { print $5 }' "${csv}" >> "${durations_file}"
+    committed=$((committed + $(awk -F, 'NR>1 && $5=="committed"' "${csv}" | wc -l)))
+    failed=$((failed + $(awk -F, 'NR>1 && $5=="failed"' "${csv}" | wc -l)))
+    total_tx=$((total_tx + $(awk -F, 'NR>1 && $5=="committed" {s+=$3} END{print s+0}' "${csv}")))
+    awk -F, 'NR>1 && $5=="committed" { print $6 }' "${csv}" >> "${durations_file}"
   done
   sort -n -o "${durations_file}" "${durations_file}"
 

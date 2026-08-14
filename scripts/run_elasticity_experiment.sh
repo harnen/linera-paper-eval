@@ -4,7 +4,7 @@ set -euo pipefail
 # Elasticity experiment (paper Fig. 6): a validator with BASE_SHARDS always-running shards
 # plus (NUM_SHARDS - BASE_SHARDS) elastic slots, and `linera-server manager` watching load
 # and adapting the worker count on its own -- no scripted scaling here, we only vary traffic
-# and let the manager react. See scripts/run_node.sh's BASE_SHARDS/START_MANAGER docs and
+# and let the manager react. See scripts/run_validators.sh's BASE_SHARDS/START_MANAGER docs and
 # linera-service/src/manager.rs for the mechanism itself.
 #
 # Traffic is a single continuous linera-lite-benchmark run driven by a time-varying
@@ -28,7 +28,7 @@ set -euo pipefail
 #   STORAGE_TOKIO_THREADS  (default 8)
 #   MANAGER_INTERVAL_MS, MANAGER_HIGH_WATERMARK, MANAGER_LOW_WATERMARK,
 #   MANAGER_MAX_MIGRATIONS_PER_ROUND, MANAGER_SCALE_DOWN_ROUNDS, MANAGER_COOLDOWN_ROUNDS
-#                          passed straight through to run_node.sh / `linera-server manager`;
+#                          passed straight through to run_validators.sh / `linera-server manager`;
 #                          defaults: 2000ms interval, high=300 req/s, low=high/4,
 #                          max-migrations=8, scale-down-rounds=3, cooldown-rounds=3
 #   NUM_CLIENTS            (default 3) parallel lite-benchmark client processes
@@ -152,7 +152,7 @@ else
     "${bin_src}/linera-storage-server" "${SPARTA_HOST}:${REMOTE_DIR}/bin/"
   rsync -az --progress "${bin_src}/linera" "${bin_src}/linera-lite-benchmark" "${CLIENT_HOST}:${REMOTE_DIR}/bin/"
 fi
-scp "${LOCAL_DIR}/scripts/run_node.sh" "${LOCAL_DIR}/scripts/stop_node.sh" "${SPARTA_HOST}:${REMOTE_DIR}/scripts/" > /dev/null
+scp "${LOCAL_DIR}/scripts/run_validators.sh" "${LOCAL_DIR}/scripts/stop_node.sh" "${SPARTA_HOST}:${REMOTE_DIR}/scripts/" > /dev/null
 scp "${LOCAL_DIR}/scripts/provision_super_owner_chains.sh" "${LOCAL_DIR}/scripts/run_lite_benchmark_parallel.sh" \
   "${CLIENT_HOST}:${REMOTE_DIR}/scripts/" > /dev/null
 ssh "${SPARTA_HOST}" "chmod +x ${REMOTE_DIR}/bin/* ${REMOTE_DIR}/scripts/*.sh"
@@ -165,14 +165,14 @@ sleep 2
 manager_watermark_args=""
 [ -n "${MANAGER_LOW_WATERMARK}" ] && manager_watermark_args="MANAGER_LOW_WATERMARK=${MANAGER_LOW_WATERMARK}"
 ssh "${SPARTA_HOST}" \
-  "STATE_DIR=${REMOTE_DIR}/state NODE_HOST=${SPARTA_ADDRESS} PROXY_PUBLIC_PORT=${PROXY_PUBLIC_PORT} \
+  "STATE_DIR=${REMOTE_DIR}/state NODE_HOST=${SPARTA_ADDRESS} PROXY_PUBLIC_PORT_BASE=${PROXY_PUBLIC_PORT} \
    NUM_SHARDS=${NUM_SHARDS} BASE_SHARDS=${BASE_SHARDS} CORES_PER_SHARD=${CORES_PER_SHARD} \
    STORAGE_TOKIO_THREADS=${STORAGE_TOKIO_THREADS} START_FAUCET=false START_MANAGER=true \
    MANAGER_INTERVAL_MS=${MANAGER_INTERVAL_MS} MANAGER_HIGH_WATERMARK=${MANAGER_HIGH_WATERMARK} \
    MANAGER_MAX_MIGRATIONS_PER_ROUND=${MANAGER_MAX_MIGRATIONS_PER_ROUND} \
    MANAGER_SCALE_DOWN_ROUNDS=${MANAGER_SCALE_DOWN_ROUNDS} MANAGER_COOLDOWN_ROUNDS=${MANAGER_COOLDOWN_ROUNDS} \
    ${manager_watermark_args} \
-   ${REMOTE_DIR}/scripts/run_node.sh"
+   ${REMOTE_DIR}/scripts/run_validators.sh"
 sleep 3
 
 cleanup_node() {

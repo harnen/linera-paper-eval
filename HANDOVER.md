@@ -74,8 +74,8 @@ SSH config used this session) and a client host (`yiannis-testbed`).
 | Script | Purpose | Key env vars | Output |
 |---|---|---|---|
 | `extract_binaries.sh` | Builds `linera`, `linera-server`, `linera-proxy`, `linera-storage-server`, `linera-lite-benchmark` locally into `./bin` | — | binaries |
-| `run_node.sh` | Starts a full validator (storage-server + N shards + proxy, optionally the manager) on the validator host | `NUM_SHARDS`, `CORES_PER_SHARD` (0=unpinned), `RESERVED_CORES`, `STORAGE_CORES`, `SHARD_TOKIO_THREADS` (new — decouple shard thread count from pinned core count), `BASE_SHARDS`, `START_MANAGER`, `MANAGER_*` | running node, logs in `$STATE_DIR` |
-| `stop_node.sh` | Clean SIGTERM-then-poll-then-SIGKILL teardown of everything `run_node.sh` started | `STATE_DIR` | — |
+| `run_validators.sh` | Starts `NUM_VALIDATORS` full validators (each: storage-server + N shards + proxy, optionally the manager) on the validator host. Replaced the old single-validator `run_node.sh` | `NUM_VALIDATORS`, `NUM_SHARDS` (per validator), `CORES_PER_SHARD` (0=unpinned), `RESERVED_CORES`, `STORAGE_CORES`, `SHARD_TOKIO_THREADS`, `BASE_SHARDS`, `START_MANAGER`, `MANAGER_*`, `PROXY_PUBLIC_PORT_BASE` | running node(s), logs in `$STATE_DIR` |
+| `stop_node.sh` | Clean SIGTERM-then-poll-then-SIGKILL teardown of everything `run_validators.sh` started | `STATE_DIR` | — |
 | `provision_super_owner_chains.sh` | Creates a pool of super-owner chains on the client host for benchmarking | `NUM_CHAINS` | `chain_pool.txt` |
 | `run_lite_benchmark_parallel.sh` | Runs N parallel `linera-lite-benchmark` client processes against a chain pool | `NUM_CLIENTS`, `CHAINS_PER_CLIENT`, `BPS_PER_CLIENT` (or `BPS_SCHEDULE`), `TRANSACTIONS_PER_BLOCK`, `TRAFFIC_MODE` | per-client `transfers.csv` |
 | **`find_max_tps.sh`** | Builds+deploys (or reuses, `SKIP_BUILD=true`), starts a node, provisions a chain pool sized for `MAX_CLIENTS × CHAINS_PER_CLIENT`, then **ramps client count** from `START_CLIENTS` to `MAX_CLIENTS` in `CLIENT_STEP` increments, `RUNTIME_SECONDS` per level, stopping when p95 latency exceeds 3× the first level's baseline. Reports the last good level as "max sustained throughput". | `NUM_SHARDS`, `CORES_PER_SHARD`, `RESERVED_CORES`, `CHAINS_PER_CLIENT`, `TRANSACTIONS_PER_BLOCK`, `TRAFFIC_MODE`, `BPS_PER_CLIENT`, `START_CLIENTS`, `CLIENT_STEP`, `MAX_CLIENTS`, `RUNTIME_SECONDS` | log with a per-level table + "Estimated max sustained throughput" line |
@@ -153,7 +153,7 @@ section 3.2).
   exact same cores a shard is confined to. This is one plausible (not fully confirmed —
   see section 5) explanation for why pinned-shard configs are much more sensitive to sudden load
   bursts than fully-unpinned ones.
-- **`--tokio-threads` is currently hardcoded to equal `CORES_PER_SHARD`** in `run_node.sh`.
+- **`--tokio-threads` is currently hardcoded to equal `CORES_PER_SHARD`** in `run_validators.sh`.
   Decoupling them (new `SHARD_TOKIO_THREADS` env var, added this session) and testing 8 threads
   on 2 pinned cores did **not** fix the pinned-shard burst-sensitivity problem — throughput barely
   moved (+4.9%) and per-op latency got slightly *worse* (more threads contending for the same 2

@@ -12,7 +12,7 @@ set -euo pipefail
 # throughput" line.
 #
 # Default core budget: CORES_PER_SHARD=2, RESERVED_CORES=2 (proxy), STORAGE_CORES=0 (storage
-# shares the proxy's small range, the simplest/default run_node.sh behavior) -- so
+# shares the proxy's small range, the simplest/default run_validators.sh behavior) -- so
 # MAX_SHARDS*CORES_PER_SHARD + RESERVED_CORES must not exceed this machine's core count;
 # with the defaults, MAX_SHARDS=19 uses exactly 19*2+2=40 cores on sparta.
 #

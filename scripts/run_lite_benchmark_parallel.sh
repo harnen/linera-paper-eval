@@ -24,7 +24,13 @@ set -euo pipefail
 #                          linera-lite-benchmark --help), must start at offset 0. Divided
 #                          evenly by NUM_CLIENTS (integer division) and passed as each
 #                          client's own --bps-schedule.
-#   TRANSACTIONS_PER_BLOCK (default 1)
+#   TRANSACTIONS_PER_BLOCK (default 1) ignored if TRANSACTIONS_PER_BLOCK_FILE is set
+#   TRANSACTIONS_PER_BLOCK_FILE (optional) path *on this host* to a file with one block size
+#                          per line (e.g. the Ethereum trace in
+#                          ethereum_txs_per_block_19m_to_21m.csv, header stripped). Every
+#                          client process reads it, and each chain walks it from its own
+#                          random offset.
+#   TRANSACTIONS_PER_BLOCK_SCALE (default 1.0) scales every entry of that file
 #   TRAFFIC_MODE           (default independent) independent | mixed | full
 #   RUNTIME_SECONDS        (default 20)
 #   BIN_DIR                (default ../bin relative to this script)
@@ -39,6 +45,8 @@ CHAINS_PER_CLIENT="${CHAINS_PER_CLIENT:-5}"
 BPS_PER_CLIENT="${BPS_PER_CLIENT:-50}"
 BPS_SCHEDULE="${BPS_SCHEDULE:-}"
 TRANSACTIONS_PER_BLOCK="${TRANSACTIONS_PER_BLOCK:-1}"
+TRANSACTIONS_PER_BLOCK_FILE="${TRANSACTIONS_PER_BLOCK_FILE:-}"
+TRANSACTIONS_PER_BLOCK_SCALE="${TRANSACTIONS_PER_BLOCK_SCALE:-1.0}"
 TRAFFIC_MODE="${TRAFFIC_MODE:-independent}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-20}"
 BIN_DIR="${BIN_DIR:-$(cd "$(dirname "$0")/../bin" 2>/dev/null && pwd || echo "")}"
@@ -62,6 +70,16 @@ mkdir -p "${outdir}"
 
 # Save experiment config
 env > "${outdir}/.env"
+
+tx_size_args=(--transactions-per-block "${TRANSACTIONS_PER_BLOCK}")
+if [ -n "${TRANSACTIONS_PER_BLOCK_FILE}" ]; then
+  [ -f "${TRANSACTIONS_PER_BLOCK_FILE}" ] || {
+    echo "TRANSACTIONS_PER_BLOCK_FILE ${TRANSACTIONS_PER_BLOCK_FILE} not found on this host" >&2
+    exit 1
+  }
+  tx_size_args=(--transactions-per-block-file "${TRANSACTIONS_PER_BLOCK_FILE}"
+                --transactions-per-block-scale "${TRANSACTIONS_PER_BLOCK_SCALE}")
+fi
 
 rate_args=()
 if [ -n "${BPS_SCHEDULE}" ]; then
@@ -107,7 +125,7 @@ for i in $(seq 1 "${NUM_CLIENTS}"); do
     --keystore "${client_dir}/keystore.json" \
     --chains "${chains_csv}" \
     "${rate_args[@]}" \
-    --transactions-per-block "${TRANSACTIONS_PER_BLOCK}" \
+    "${tx_size_args[@]}" \
     --traffic-mode "${TRAFFIC_MODE}" \
     --output-csv "${client_dir}/transfers.csv" \
     --runtime-in-seconds "${RUNTIME_SECONDS}" \

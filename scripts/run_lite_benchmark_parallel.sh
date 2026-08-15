@@ -32,6 +32,21 @@ set -euo pipefail
 #                          random offset.
 #   TRANSACTIONS_PER_BLOCK_SCALE (default 1.0) scales every entry of that file
 #   TRAFFIC_MODE           (default independent) independent | mixed | full
+#   LIGHT_CERTIFICATES     (default false) passed as --light-certificates when true: broadcast
+#                          the confirmed certificate's compact hash+signatures form to
+#                          validators known to have voted for it (they already have the value
+#                          cached), instead of the full certificate -- shrinks the third of
+#                          three round trips per block
+#   CLIENT_MODE            (default lite) passed as --client-mode: lite (3 RTTs/block, no local
+#                          storage/execution) or full (2 RTTs/block, a real ChainClient with
+#                          local in-memory storage that executes every block itself -- native
+#                          operations only, currently requires TRAFFIC_MODE=independent)
+#   CLIENT_TOKIO_THREADS   (optional) passed as --tokio-threads to every client process. Each
+#                          process defaults to one Tokio worker thread per CPU on this machine,
+#                          which is generous for what's mostly I/O-bound work -- at high
+#                          NUM_CLIENTS that can badly oversubscribe the client host (N
+#                          processes x num_cpus threads each). Set this low (e.g. 2) when
+#                          running many clients per machine.
 #   RUNTIME_SECONDS        (default 20)
 #   BIN_DIR                (default ../bin relative to this script)
 #   EVAL_OUTPUT_DIR        (default /data_out)
@@ -48,6 +63,9 @@ TRANSACTIONS_PER_BLOCK="${TRANSACTIONS_PER_BLOCK:-1}"
 TRANSACTIONS_PER_BLOCK_FILE="${TRANSACTIONS_PER_BLOCK_FILE:-}"
 TRANSACTIONS_PER_BLOCK_SCALE="${TRANSACTIONS_PER_BLOCK_SCALE:-1.0}"
 TRAFFIC_MODE="${TRAFFIC_MODE:-independent}"
+LIGHT_CERTIFICATES="${LIGHT_CERTIFICATES:-false}"
+CLIENT_MODE="${CLIENT_MODE:-lite}"
+CLIENT_TOKIO_THREADS="${CLIENT_TOKIO_THREADS:-}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-20}"
 BIN_DIR="${BIN_DIR:-$(cd "$(dirname "$0")/../bin" 2>/dev/null && pwd || echo "")}"
 EVAL_OUTPUT_DIR="${EVAL_OUTPUT_DIR:-/data_out}"
@@ -120,6 +138,15 @@ for i in $(seq 1 "${NUM_CLIENTS}"); do
   cp "${LINERA_WALLET}" "${client_dir}/wallet.json"
   cp "${LINERA_KEYSTORE}" "${client_dir}/keystore.json"
 
+  light_cert_args=()
+  if [ "${LIGHT_CERTIFICATES}" = "true" ]; then
+    light_cert_args=(--light-certificates)
+  fi
+  tokio_threads_args=()
+  if [ -n "${CLIENT_TOKIO_THREADS}" ]; then
+    tokio_threads_args=(--tokio-threads "${CLIENT_TOKIO_THREADS}")
+  fi
+
   RUST_LOG="info,linera_service=info" linera-lite-benchmark \
     --wallet "${client_dir}/wallet.json" \
     --keystore "${client_dir}/keystore.json" \
@@ -127,6 +154,9 @@ for i in $(seq 1 "${NUM_CLIENTS}"); do
     "${rate_args[@]}" \
     "${tx_size_args[@]}" \
     --traffic-mode "${TRAFFIC_MODE}" \
+    --client-mode "${CLIENT_MODE}" \
+    "${light_cert_args[@]}" \
+    "${tokio_threads_args[@]}" \
     --output-csv "${client_dir}/transfers.csv" \
     --runtime-in-seconds "${RUNTIME_SECONDS}" \
     > "${client_dir}/lite_benchmark.log" 2>&1 &

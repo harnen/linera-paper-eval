@@ -39,8 +39,23 @@ set -euo pipefail
 #                          overhead relative to storage-server's actual per-call work)
 #   CHAINS_PER_CLIENT      (default 5)
 #   BPS_PER_CLIENT         (default 50)
-#   TRANSACTIONS_PER_BLOCK (default 1)
+#   TRANSACTIONS_PER_BLOCK (default 1) ignored if TRANSACTIONS_PER_BLOCK_FILE is set
+#   TRANSACTIONS_PER_BLOCK_FILE (optional) path *on CLIENT_HOST* to a file with one block size
+#                          per line (e.g. the Ethereum trace in
+#                          ethereum_txs_per_block_19m_to_21m.csv, header stripped), passed
+#                          through to run_lite_benchmark_parallel.sh
+#   TRANSACTIONS_PER_BLOCK_SCALE (default 1.0) scales every entry of that file
 #   TRAFFIC_MODE           (default independent) independent | mixed | full
+#   LIGHT_CERTIFICATES     (default false) passed through to run_lite_benchmark_parallel.sh --
+#                          broadcast the confirmed certificate's compact hash+signatures form
+#                          to validators known to have voted for it, instead of the full
+#                          certificate
+#   CLIENT_MODE            (default lite) passed through to run_lite_benchmark_parallel.sh --
+#                          lite (3 RTTs/block) or full (2 RTTs/block, real local execution,
+#                          currently requires TRAFFIC_MODE=independent)
+#   CLIENT_TOKIO_THREADS   (optional) passed through to run_lite_benchmark_parallel.sh -- caps
+#                          each client process's Tokio worker threads (default: one per CPU on
+#                          the client host, which oversubscribes badly at high client counts)
 #   MAX_CLIENTS            (default 20) ramp ceiling
 #   RUNTIME_SECONDS        (default 20) duration of each level
 #   LATENCY_DEGRADATION_FACTOR (default 3.0) stop when p95 exceeds this multiple of the
@@ -126,6 +141,11 @@ STORAGE_TOKIO_THREADS="${STORAGE_TOKIO_THREADS:-0}"
 CHAINS_PER_CLIENT="${CHAINS_PER_CLIENT:-5}"
 BPS_PER_CLIENT="${BPS_PER_CLIENT:-50}"
 TRANSACTIONS_PER_BLOCK="${TRANSACTIONS_PER_BLOCK:-1}"
+TRANSACTIONS_PER_BLOCK_FILE="${TRANSACTIONS_PER_BLOCK_FILE:-}"
+TRANSACTIONS_PER_BLOCK_SCALE="${TRANSACTIONS_PER_BLOCK_SCALE:-1.0}"
+LIGHT_CERTIFICATES="${LIGHT_CERTIFICATES:-false}"
+CLIENT_MODE="${CLIENT_MODE:-lite}"
+CLIENT_TOKIO_THREADS="${CLIENT_TOKIO_THREADS:-}"
 TRAFFIC_MODE="${TRAFFIC_MODE:-independent}"
 MAX_CLIENTS="${MAX_CLIENTS:-20}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-20}"
@@ -312,7 +332,12 @@ measure_level() {
     LINERA_WALLET=./admin_wallet.json LINERA_KEYSTORE=./admin_keystore.json \
     CHAIN_IDS_FILE=./chain_pool.txt NUM_CLIENTS=${n} CHAINS_PER_CLIENT=${CHAINS_PER_CLIENT} \
     BPS_PER_CLIENT=${BPS_PER_CLIENT} TRANSACTIONS_PER_BLOCK=${TRANSACTIONS_PER_BLOCK} \
-    TRAFFIC_MODE=${TRAFFIC_MODE} RUNTIME_SECONDS=${RUNTIME_SECONDS} \
+    TRANSACTIONS_PER_BLOCK_FILE=${TRANSACTIONS_PER_BLOCK_FILE} \
+    TRANSACTIONS_PER_BLOCK_SCALE=${TRANSACTIONS_PER_BLOCK_SCALE} \
+    TRAFFIC_MODE=${TRAFFIC_MODE} LIGHT_CERTIFICATES=${LIGHT_CERTIFICATES} \
+    CLIENT_MODE=${CLIENT_MODE} \
+    CLIENT_TOKIO_THREADS=${CLIENT_TOKIO_THREADS} \
+    RUNTIME_SECONDS=${RUNTIME_SECONDS} \
     EVAL_OUTPUT_DIR=./results EXPERIMENT_NAME=${experiment_name} \
     ./scripts/run_lite_benchmark_parallel.sh" > /dev/null
   sparta_stat_after="$(read_cpu_stat_all "${SPARTA_HOST}")"

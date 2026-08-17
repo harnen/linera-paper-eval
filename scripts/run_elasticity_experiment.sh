@@ -230,7 +230,7 @@ for csv in "${OUT_DIR}"/client_*/transfers.csv; do
   tail -n +2 "${csv}" >> "${COMBINED_CSV}"
 done
 
-scp "${SPARTA_HOST}:${REMOTE_DIR}/state/manager.log" "${OUT_DIR}/manager.log" > /dev/null
+scp "${SPARTA_HOST}:${REMOTE_DIR}/state/manager_0.log" "${OUT_DIR}/manager.log" > /dev/null
 
 echo "==> Done."
 echo "    Combined transfers: ${COMBINED_CSV} ($(($(wc -l < "${COMBINED_CSV}") - 1)) rows)"

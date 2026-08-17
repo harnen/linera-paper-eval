@@ -56,10 +56,28 @@ set -euo pipefail
 #   CLIENT_TOKIO_THREADS   (optional) passed through to run_lite_benchmark_parallel.sh -- caps
 #                          each client process's Tokio worker threads (default: one per CPU on
 #                          the client host, which oversubscribes badly at high client counts)
+#   SIMULATED_LATENCY_MS   (optional) passed through to run_lite_benchmark_parallel.sh -- adds
+#                          this many milliseconds of artificial delay before every gRPC request,
+#                          simulating a higher-latency (e.g. WAN) link between client and
+#                          validator
+#   SKIP_MESSAGE_PROCESSING (default false) passed through to run_lite_benchmark_parallel.sh --
+#                          in mixed/full traffic modes, chains still send cross-chain messages
+#                          but never drain their own inboxes, isolating the cost of sending
+#                          messages from the cost of receiving/processing them
 #   MAX_CLIENTS            (default 20) ramp ceiling
 #   RUNTIME_SECONDS        (default 20) duration of each level
 #   LATENCY_DEGRADATION_FACTOR (default 3.0) stop when p95 exceeds this multiple of the
 #                          first level's p95 -- ignored when FAILURES_ONLY=true
+#   LATENCY_DEGRADATION_MIN_MS (default 100) the degradation check only fires once p95 also
+#                          exceeds this many milliseconds in absolute terms (i.e. the
+#                          effective threshold is max(baseline * FACTOR, MIN_MS)). A purely
+#                          relative threshold is oversensitive when the baseline itself is
+#                          tiny -- e.g. a ~15ms LAN baseline makes a 3x threshold just ~45ms,
+#                          which ordinary scheduling/queueing jitter can trip long before the
+#                          validator is anywhere near its real capacity, understating the
+#                          ceiling by an order of magnitude. This floor has no effect once the
+#                          baseline itself is already above MIN_MS / FACTOR (e.g. WAN-latency
+#                          runs, where the relative threshold is already the looser one).
 #   MIN_ACHIEVED_FRACTION  (default 0.8) stop when achieved throughput falls below this
 #                          fraction of requested throughput -- ignored when FAILURES_ONLY=true
 #   FAILURES_ONLY          (default false) if true, only stop the ramp when failed > 0;
@@ -146,10 +164,13 @@ TRANSACTIONS_PER_BLOCK_SCALE="${TRANSACTIONS_PER_BLOCK_SCALE:-1.0}"
 LIGHT_CERTIFICATES="${LIGHT_CERTIFICATES:-false}"
 CLIENT_MODE="${CLIENT_MODE:-lite}"
 CLIENT_TOKIO_THREADS="${CLIENT_TOKIO_THREADS:-}"
+SIMULATED_LATENCY_MS="${SIMULATED_LATENCY_MS:-}"
+SKIP_MESSAGE_PROCESSING="${SKIP_MESSAGE_PROCESSING:-false}"
 TRAFFIC_MODE="${TRAFFIC_MODE:-independent}"
 MAX_CLIENTS="${MAX_CLIENTS:-20}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-20}"
 LATENCY_DEGRADATION_FACTOR="${LATENCY_DEGRADATION_FACTOR:-3.0}"
+LATENCY_DEGRADATION_MIN_MS="${LATENCY_DEGRADATION_MIN_MS:-100}"
 MIN_ACHIEVED_FRACTION="${MIN_ACHIEVED_FRACTION:-0.8}"
 FAILURES_ONLY="${FAILURES_ONLY:-false}"
 START_CLIENTS="${START_CLIENTS:-1}"
@@ -337,6 +358,8 @@ measure_level() {
     TRAFFIC_MODE=${TRAFFIC_MODE} LIGHT_CERTIFICATES=${LIGHT_CERTIFICATES} \
     CLIENT_MODE=${CLIENT_MODE} \
     CLIENT_TOKIO_THREADS=${CLIENT_TOKIO_THREADS} \
+    SIMULATED_LATENCY_MS=${SIMULATED_LATENCY_MS} \
+    SKIP_MESSAGE_PROCESSING=${SKIP_MESSAGE_PROCESSING} \
     RUNTIME_SECONDS=${RUNTIME_SECONDS} \
     EVAL_OUTPUT_DIR=./results EXPERIMENT_NAME=${experiment_name} \
     ./scripts/run_lite_benchmark_parallel.sh" > /dev/null
@@ -408,8 +431,8 @@ measure_level() {
   LEVEL_STOP_REASON=""
   if [ "${failed}" -gt 0 ]; then
     LEVEL_STOP_REASON="${failed} failed block(s)"
-  elif [ "${FAILURES_ONLY}" != "true" ] && awk -v p="${p95_ms}" -v b="${baseline_p95}" -v f="${LATENCY_DEGRADATION_FACTOR}" 'BEGIN{exit !(b>0 && p>b*f)}'; then
-    LEVEL_STOP_REASON="p95 latency ${p95_ms}ms exceeds ${LATENCY_DEGRADATION_FACTOR}x baseline (${baseline_p95}ms)"
+  elif [ "${FAILURES_ONLY}" != "true" ] && awk -v p="${p95_ms}" -v b="${baseline_p95}" -v f="${LATENCY_DEGRADATION_FACTOR}" -v m="${LATENCY_DEGRADATION_MIN_MS}" 'BEGIN{threshold=b*f; if (threshold<m) threshold=m; exit !(b>0 && p>threshold)}'; then
+    LEVEL_STOP_REASON="p95 latency ${p95_ms}ms exceeds max(${LATENCY_DEGRADATION_FACTOR}x baseline, ${LATENCY_DEGRADATION_MIN_MS}ms) (baseline ${baseline_p95}ms)"
   elif [ "${FAILURES_ONLY}" != "true" ] && awk -v a="${achieved_bps}" -v r="${requested_bps}" -v f="${MIN_ACHIEVED_FRACTION}" 'BEGIN{exit !(a < r*f)}'; then
     LEVEL_STOP_REASON="achieved ${achieved_bps} BPS is below ${MIN_ACHIEVED_FRACTION}x requested ${requested_bps}"
   fi

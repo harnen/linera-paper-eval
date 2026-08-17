@@ -47,6 +47,17 @@ set -euo pipefail
 #                          NUM_CLIENTS that can badly oversubscribe the client host (N
 #                          processes x num_cpus threads each). Set this low (e.g. 2) when
 #                          running many clients per machine.
+#   SIMULATED_LATENCY_MS   (optional) passed as --simulated-latency-ms to every client process:
+#                          adds this many milliseconds of artificial delay before every gRPC
+#                          request to a validator, simulating a higher-latency (e.g. WAN) link.
+#                          Useful for testing whether round-trips-per-block (--client-mode,
+#                          --light-certificates) matters more once each round trip is expensive.
+#   SKIP_MESSAGE_PROCESSING (default false) passed as --skip-message-processing when true: in
+#                          mixed/full traffic modes, chains still send cross-chain messages as
+#                          usual but never drain their own inboxes, isolating the CPU cost of
+#                          sending messages from the cost of receiving/processing them. No
+#                          effect in independent mode. Inboxes grow unbounded for the run's
+#                          duration -- fine for a short benchmark, not a realistic steady state.
 #   RUNTIME_SECONDS        (default 20)
 #   BIN_DIR                (default ../bin relative to this script)
 #   EVAL_OUTPUT_DIR        (default /data_out)
@@ -66,6 +77,8 @@ TRAFFIC_MODE="${TRAFFIC_MODE:-independent}"
 LIGHT_CERTIFICATES="${LIGHT_CERTIFICATES:-false}"
 CLIENT_MODE="${CLIENT_MODE:-lite}"
 CLIENT_TOKIO_THREADS="${CLIENT_TOKIO_THREADS:-}"
+SIMULATED_LATENCY_MS="${SIMULATED_LATENCY_MS:-}"
+SKIP_MESSAGE_PROCESSING="${SKIP_MESSAGE_PROCESSING:-false}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-20}"
 BIN_DIR="${BIN_DIR:-$(cd "$(dirname "$0")/../bin" 2>/dev/null && pwd || echo "")}"
 EVAL_OUTPUT_DIR="${EVAL_OUTPUT_DIR:-/data_out}"
@@ -146,6 +159,14 @@ for i in $(seq 1 "${NUM_CLIENTS}"); do
   if [ -n "${CLIENT_TOKIO_THREADS}" ]; then
     tokio_threads_args=(--tokio-threads "${CLIENT_TOKIO_THREADS}")
   fi
+  simulated_latency_args=()
+  if [ -n "${SIMULATED_LATENCY_MS}" ]; then
+    simulated_latency_args=(--simulated-latency-ms "${SIMULATED_LATENCY_MS}")
+  fi
+  skip_message_processing_args=()
+  if [ "${SKIP_MESSAGE_PROCESSING}" = "true" ]; then
+    skip_message_processing_args=(--skip-message-processing)
+  fi
 
   RUST_LOG="info,linera_service=info" linera-lite-benchmark \
     --wallet "${client_dir}/wallet.json" \
@@ -157,6 +178,8 @@ for i in $(seq 1 "${NUM_CLIENTS}"); do
     --client-mode "${CLIENT_MODE}" \
     "${light_cert_args[@]}" \
     "${tokio_threads_args[@]}" \
+    "${simulated_latency_args[@]}" \
+    "${skip_message_processing_args[@]}" \
     --output-csv "${client_dir}/transfers.csv" \
     --runtime-in-seconds "${RUNTIME_SECONDS}" \
     > "${client_dir}/lite_benchmark.log" 2>&1 &

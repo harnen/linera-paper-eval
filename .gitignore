@@ -3,3 +3,8 @@
 /.idea
 /data_out
 __pycache__/
+/results
+/profile_out
+/bin
+/.claude
+README.html

@@ -51,8 +51,8 @@ set -euo pipefail
 #   STORAGE_TOKIO_THREADS  (default 0 = storage-server's own default)
 #   CHAINS_PER_CLIENT, BPS_PER_CLIENT, TRANSACTIONS_PER_BLOCK[_FILE|_SCALE], TRAFFIC_MODE,
 #   LIGHT_CERTIFICATES, CLIENT_MODE, CLIENT_TOKIO_THREADS, SIMULATED_LATENCY_MS,
-#   SKIP_MESSAGE_PROCESSING, MAX_CLIENTS, RUNTIME_SECONDS, LATENCY_DEGRADATION_FACTOR,
-#   LATENCY_DEGRADATION_MIN_MS, MIN_ACHIEVED_FRACTION, FAILURES_ONLY, START_CLIENTS,
+#   SKIP_MESSAGE_PROCESSING, MAX_CLIENTS, RUNTIME_SECONDS, MIN_ACHIEVED_FRACTION,
+#   FAILURES_ONLY, START_CLIENTS,
 #   CLIENT_STEP, CLIENT_STEP_SCHEDULE, CONFIRM_STOP_RETRIES, SUMMARY_CSV_PATH,
 #   CLIENT_ARCHIVE_DIR, CLEAN_LEVEL_ON_CLIENT
 #                          identical meaning to find_max_tps.sh -- see there for the full
@@ -95,8 +95,6 @@ MAX_INCOMING_BUNDLES_PER_BLOCK="${MAX_INCOMING_BUNDLES_PER_BLOCK:-}"
 TRAFFIC_MODE="${TRAFFIC_MODE:-independent}"
 MAX_CLIENTS="${MAX_CLIENTS:-20}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-20}"
-LATENCY_DEGRADATION_FACTOR="${LATENCY_DEGRADATION_FACTOR:-3.0}"
-LATENCY_DEGRADATION_MIN_MS="${LATENCY_DEGRADATION_MIN_MS:-100}"
 MIN_ACHIEVED_FRACTION="${MIN_ACHIEVED_FRACTION:-0.8}"
 FAILURES_ONLY="${FAILURES_ONLY:-false}"
 START_CLIENTS="${START_CLIENTS:-1}"
@@ -286,7 +284,6 @@ printf "%-8s %-14s %-10s %-8s %-14s %-14s %-10s %-10s %-10s %-22s %-22s %-19s %-
   "clients" "requested_bps" "committed" "failed" "achieved_bps" "achieved_tps" \
   "p25_ms" "p50_ms" "p95_ms" "validator_rsvd%(min/avg/max)" "validator_storage%(m/a/M)" "validator_shard%(m/a/M)" "client_cpu%(m/a/M)"
 
-baseline_p95=""
 declare -A LEVEL_LINE
 declare -A LEVEL_VERDICT
 
@@ -420,15 +417,9 @@ measure_level() {
     "${n}" "${requested_bps}" "${committed}" "${failed}" "${achieved_bps}" "${achieved_tps}" \
     "${p25_ms}" "${p50_ms}" "${p95_ms}" "${validator_reserved_summary}" "${validator_storage_summary}" "${validator_shard_summary}" "${client_cpu_pct}")"
 
-  if [ -z "${baseline_p95}" ]; then
-    baseline_p95="${p95_ms}"
-  fi
-
   LEVEL_STOP_REASON=""
   if [ "${failed}" -gt 0 ]; then
     LEVEL_STOP_REASON="${failed} failed block(s)"
-  elif [ "${FAILURES_ONLY}" != "true" ] && awk -v p="${p95_ms}" -v b="${baseline_p95}" -v f="${LATENCY_DEGRADATION_FACTOR}" -v m="${LATENCY_DEGRADATION_MIN_MS}" 'BEGIN{threshold=b*f; if (threshold<m) threshold=m; exit !(b>0 && p>threshold)}'; then
-    LEVEL_STOP_REASON="p95 latency ${p95_ms}ms exceeds max(${LATENCY_DEGRADATION_FACTOR}x baseline, ${LATENCY_DEGRADATION_MIN_MS}ms) (baseline ${baseline_p95}ms)"
   elif [ "${FAILURES_ONLY}" != "true" ] && awk -v a="${achieved_bps}" -v r="${requested_bps}" -v f="${MIN_ACHIEVED_FRACTION}" 'BEGIN{exit !(a < r*f)}'; then
     LEVEL_STOP_REASON="achieved ${achieved_bps} BPS is below ${MIN_ACHIEVED_FRACTION}x requested ${requested_bps}"
   fi

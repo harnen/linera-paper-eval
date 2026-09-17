@@ -14,8 +14,17 @@ set -euo pipefail
 #   CHAIN_IDS_FILE         (required) pool of chain IDs, one per line (from
 #                          provision_super_owner_chains.sh); must have at least
 #                          NUM_CLIENTS * CHAINS_PER_CLIENT lines
-#   NUM_CLIENTS            (required) how many parallel linera-lite-benchmark processes
+#   NUM_CLIENTS            (required) how many parallel linera-lite-benchmark processes *on
+#                          this host*
 #   CHAINS_PER_CLIENT      (default 5) chains handed to each client (a distinct slice each)
+#   CLIENT_INDEX_OFFSET    (default 0) global index of the first client this host runs, minus
+#                          one -- i.e. this host's clients are numbered
+#                          [offset+1, offset+NUM_CLIENTS] rather than always starting at 1. Set
+#                          this when splitting one level's clients across multiple hosts
+#                          against a single shared CHAIN_IDS_FILE, so each host's clients index
+#                          into a disjoint slice of it (host 2 of 4, e.g., passes the previous
+#                          hosts' combined client counts as its offset) and each host's output
+#                          directories (client_<i>) stay globally unique instead of colliding.
 #   BPS_PER_CLIENT         (default 50) blocks/s target per client process. Ignored if
 #                          BPS_SCHEDULE is set.
 #   BPS_SCHEDULE           (optional) a time-varying *total* (system-wide, summed across all
@@ -58,6 +67,17 @@ set -euo pipefail
 #                          sending messages from the cost of receiving/processing them. No
 #                          effect in independent mode. Inboxes grow unbounded for the run's
 #                          duration -- fine for a short benchmark, not a realistic steady state.
+#   MAX_DESTINATIONS_PER_BLOCK (optional) passed as --max-destinations-per-block: caps how many
+#                          distinct chains one block's transfers are spread across in mixed/full
+#                          traffic modes, regardless of the block's transaction count or how many
+#                          chains are in play. Without it, a block bigger than the destination
+#                          pool touches every destination at least once, so cross-chain fan-out
+#                          scales with the chain count instead of staying bounded.
+#   MAX_INCOMING_BUNDLES_PER_BLOCK (optional) passed as --max-incoming-bundles-per-block: caps
+#                          how many incoming message bundles one block will drain from its
+#                          chain's inboxes, on top of its own operations, in mixed/full traffic
+#                          modes. Defaults (unset) to twice that block's own operation count.
+#                          No effect in independent mode.
 #   RUNTIME_SECONDS        (default 20)
 #   BIN_DIR                (default ../bin relative to this script)
 #   EVAL_OUTPUT_DIR        (default /data_out)
@@ -68,6 +88,7 @@ LINERA_KEYSTORE="${LINERA_KEYSTORE:?set LINERA_KEYSTORE to the admin keystore pa
 CHAIN_IDS_FILE="${CHAIN_IDS_FILE:?set CHAIN_IDS_FILE to the chain-id pool file}"
 NUM_CLIENTS="${NUM_CLIENTS:?set NUM_CLIENTS to how many parallel client processes to launch}"
 CHAINS_PER_CLIENT="${CHAINS_PER_CLIENT:-5}"
+CLIENT_INDEX_OFFSET="${CLIENT_INDEX_OFFSET:-0}"
 BPS_PER_CLIENT="${BPS_PER_CLIENT:-50}"
 BPS_SCHEDULE="${BPS_SCHEDULE:-}"
 TRANSACTIONS_PER_BLOCK="${TRANSACTIONS_PER_BLOCK:-1}"
@@ -79,6 +100,8 @@ CLIENT_MODE="${CLIENT_MODE:-lite}"
 CLIENT_TOKIO_THREADS="${CLIENT_TOKIO_THREADS:-}"
 SIMULATED_LATENCY_MS="${SIMULATED_LATENCY_MS:-}"
 SKIP_MESSAGE_PROCESSING="${SKIP_MESSAGE_PROCESSING:-false}"
+MAX_DESTINATIONS_PER_BLOCK="${MAX_DESTINATIONS_PER_BLOCK:-}"
+MAX_INCOMING_BUNDLES_PER_BLOCK="${MAX_INCOMING_BUNDLES_PER_BLOCK:-}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-20}"
 BIN_DIR="${BIN_DIR:-$(cd "$(dirname "$0")/../bin" 2>/dev/null && pwd || echo "")}"
 EVAL_OUTPUT_DIR="${EVAL_OUTPUT_DIR:-/data_out}"
@@ -89,10 +112,10 @@ if [ -n "${BIN_DIR}" ]; then
 fi
 command -v linera-lite-benchmark >/dev/null || { echo "linera-lite-benchmark binary not found on PATH (set BIN_DIR)" >&2; exit 1; }
 
-needed_chains=$((NUM_CLIENTS * CHAINS_PER_CLIENT))
+needed_chains=$(((CLIENT_INDEX_OFFSET + NUM_CLIENTS) * CHAINS_PER_CLIENT))
 available_chains="$(wc -l < "${CHAIN_IDS_FILE}")"
 if [ "${available_chains}" -lt "${needed_chains}" ]; then
-  echo "chain pool ${CHAIN_IDS_FILE} has ${available_chains} chains, need ${needed_chains} (NUM_CLIENTS * CHAINS_PER_CLIENT)" >&2
+  echo "chain pool ${CHAIN_IDS_FILE} has ${available_chains} chains, need ${needed_chains} ((CLIENT_INDEX_OFFSET + NUM_CLIENTS) * CHAINS_PER_CLIENT)" >&2
   exit 1
 fi
 
@@ -136,7 +159,7 @@ else
 fi
 
 pids=()
-for i in $(seq 1 "${NUM_CLIENTS}"); do
+for i in $(seq "$((CLIENT_INDEX_OFFSET + 1))" "$((CLIENT_INDEX_OFFSET + NUM_CLIENTS))"); do
   start_line=$(( (i - 1) * CHAINS_PER_CLIENT + 1 ))
   end_line=$(( i * CHAINS_PER_CLIENT ))
   chains_csv="$(sed -n "${start_line},${end_line}p" "${CHAIN_IDS_FILE}" | paste -sd,)"
@@ -167,6 +190,14 @@ for i in $(seq 1 "${NUM_CLIENTS}"); do
   if [ "${SKIP_MESSAGE_PROCESSING}" = "true" ]; then
     skip_message_processing_args=(--skip-message-processing)
   fi
+  max_destinations_args=()
+  if [ -n "${MAX_DESTINATIONS_PER_BLOCK}" ]; then
+    max_destinations_args=(--max-destinations-per-block "${MAX_DESTINATIONS_PER_BLOCK}")
+  fi
+  max_incoming_bundles_args=()
+  if [ -n "${MAX_INCOMING_BUNDLES_PER_BLOCK}" ]; then
+    max_incoming_bundles_args=(--max-incoming-bundles-per-block "${MAX_INCOMING_BUNDLES_PER_BLOCK}")
+  fi
 
   RUST_LOG="info,linera_service=info" linera-lite-benchmark \
     --wallet "${client_dir}/wallet.json" \
@@ -180,6 +211,8 @@ for i in $(seq 1 "${NUM_CLIENTS}"); do
     "${tokio_threads_args[@]}" \
     "${simulated_latency_args[@]}" \
     "${skip_message_processing_args[@]}" \
+    "${max_destinations_args[@]}" \
+    "${max_incoming_bundles_args[@]}" \
     --output-csv "${client_dir}/transfers.csv" \
     --runtime-in-seconds "${RUNTIME_SECONDS}" \
     > "${client_dir}/lite_benchmark.log" 2>&1 &

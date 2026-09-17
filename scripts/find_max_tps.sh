@@ -21,7 +21,7 @@ set -euo pipefail
 #   CLIENT_HOST            (default yiannis-testbed)
 #   REMOTE_DIR             (default linera)
 #   PROXY_PUBLIC_PORT      (default 4001)
-#   BUILD_PROFILE          (default debug) debug | release
+#   BUILD_PROFILE          (default release) debug | release
 #   LINERA_SRC             (default ~/work/linera/linera-protocol)
 #   NUM_SHARDS             (default 19) shards *per validator*
 #   NUM_VALIDATORS         (default 1) committee size. The validator(s) are always started by
@@ -149,7 +149,7 @@ SPARTA_HOST="${SPARTA_HOST:-sparta}"
 CLIENT_HOST="${CLIENT_HOST:-yiannis-testbed}"
 REMOTE_DIR="${REMOTE_DIR:-linera}"
 PROXY_PUBLIC_PORT="${PROXY_PUBLIC_PORT:-4001}"
-BUILD_PROFILE="${BUILD_PROFILE:-debug}"
+BUILD_PROFILE="${BUILD_PROFILE:-release}"
 LINERA_SRC="${LINERA_SRC:-$HOME/work/linera/linera-protocol}"
 NUM_SHARDS="${NUM_SHARDS:-19}"
 NUM_VALIDATORS="${NUM_VALIDATORS:-1}"
@@ -166,6 +166,8 @@ CLIENT_MODE="${CLIENT_MODE:-lite}"
 CLIENT_TOKIO_THREADS="${CLIENT_TOKIO_THREADS:-}"
 SIMULATED_LATENCY_MS="${SIMULATED_LATENCY_MS:-}"
 SKIP_MESSAGE_PROCESSING="${SKIP_MESSAGE_PROCESSING:-false}"
+MAX_DESTINATIONS_PER_BLOCK="${MAX_DESTINATIONS_PER_BLOCK:-}"
+MAX_INCOMING_BUNDLES_PER_BLOCK="${MAX_INCOMING_BUNDLES_PER_BLOCK:-}"
 TRAFFIC_MODE="${TRAFFIC_MODE:-independent}"
 MAX_CLIENTS="${MAX_CLIENTS:-20}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-20}"
@@ -360,6 +362,8 @@ measure_level() {
     CLIENT_TOKIO_THREADS=${CLIENT_TOKIO_THREADS} \
     SIMULATED_LATENCY_MS=${SIMULATED_LATENCY_MS} \
     SKIP_MESSAGE_PROCESSING=${SKIP_MESSAGE_PROCESSING} \
+    MAX_DESTINATIONS_PER_BLOCK=${MAX_DESTINATIONS_PER_BLOCK} \
+    MAX_INCOMING_BUNDLES_PER_BLOCK=${MAX_INCOMING_BUNDLES_PER_BLOCK} \
     RUNTIME_SECONDS=${RUNTIME_SECONDS} \
     EVAL_OUTPUT_DIR=./results EXPERIMENT_NAME=${experiment_name} \
     ./scripts/run_lite_benchmark_parallel.sh" > /dev/null

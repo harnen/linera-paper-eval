@@ -18,7 +18,13 @@ set -euo pipefail
 #   VALIDATOR_HOSTS      (required) space-separated hosts, at least max(VALIDATOR_COUNTS) of
 #                         them -- each validator count N uses the first N of this list, so
 #                         results across N stay on a consistent, comparable set of machines.
-#   CLIENT_HOST           (required)
+#   CLIENT_HOST           (required) used for calibration (profile_core_split_grid5k.sh only
+#                         supports a single client host)
+#   RAMP_CLIENT_HOSTS     (optional, space-separated) client hosts for the full ramp
+#                         (find_max_tps_grid5k.sh, which does support multiple) -- defaults to
+#                         just CLIENT_HOST if unset. Set this to several hosts once a single
+#                         client host's CPU becomes the bottleneck (see find_max_tps_grid5k.sh's
+#                         per-level client_cpu_pct column).
 #   SSH_PROXY_JUMP, SSH_USER, REMOTE_DIR, LINERA_SRC
 #   VALIDATOR_COUNTS      (default "1 5 10")
 #   TRAFFIC_MODES         (default "independent mixed full")
@@ -41,6 +47,7 @@ set -euo pipefail
 VALIDATOR_HOSTS="${VALIDATOR_HOSTS:?set VALIDATOR_HOSTS to a space-separated list of hosts}"
 read -ra ALL_VALIDATOR_HOSTS_ARR <<< "${VALIDATOR_HOSTS}"
 CLIENT_HOST="${CLIENT_HOST:?set CLIENT_HOST}"
+RAMP_CLIENT_HOSTS="${RAMP_CLIENT_HOSTS:-${CLIENT_HOST}}"
 SSH_PROXY_JUMP="${SSH_PROXY_JUMP:-}"
 SSH_USER="${SSH_USER:-}"
 REMOTE_DIR="${REMOTE_DIR:-linera}"
@@ -128,7 +135,7 @@ for n in ${VALIDATOR_COUNTS}; do
     archive_dir="${CLIENT_ARCHIVE_ROOT}/${label}_raw"
     mkdir -p "${archive_dir}"
     VALIDATOR_HOSTS="${hosts_n}" SSH_PROXY_JUMP="${SSH_PROXY_JUMP}" SSH_USER="${SSH_USER}" \
-      CLIENT_HOSTS="${CLIENT_HOST}" REMOTE_DIR="${REMOTE_DIR}" LINERA_SRC="${LINERA_SRC}" \
+      CLIENT_HOSTS="${RAMP_CLIENT_HOSTS}" REMOTE_DIR="${REMOTE_DIR}" LINERA_SRC="${LINERA_SRC}" \
       SKIP_BUILD=true SKIP_BINARY_DEPLOY=true \
       RESERVED_CORES="${best_reserved}" STORAGE_CORES="${best_storage}" \
       CORES_PER_SHARD="${best_cps}" NUM_SHARDS="${best_shards}" \

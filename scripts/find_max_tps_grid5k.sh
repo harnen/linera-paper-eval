@@ -291,7 +291,6 @@ measure_level() {
   local n="$1" attempt="$2" step="$3"
   local requested_bps=$((n * BPS_PER_CLIENT))
   local experiment_name="level_${RUN_ID}_${n}_a${attempt}"
-  local remote_level_dir="${REMOTE_DIR}/results/lite_benchmark/${experiment_name}"
 
   # Split this level's n clients as evenly as possible across the client hosts (remainder to
   # the first few), so each host runs a disjoint index range against the shared chain pool.
@@ -335,7 +334,7 @@ measure_level() {
       MAX_DESTINATIONS_PER_BLOCK=${MAX_DESTINATIONS_PER_BLOCK} \
       MAX_INCOMING_BUNDLES_PER_BLOCK=${MAX_INCOMING_BUNDLES_PER_BLOCK} \
       RUNTIME_SECONDS=${RUNTIME_SECONDS} \
-      EVAL_OUTPUT_DIR=./results EXPERIMENT_NAME=${experiment_name} \
+      EVAL_OUTPUT_DIR=./results EXPERIMENT_NAME=${experiment_name}_h${idx} \
       ./scripts/run_lite_benchmark_parallel.sh" > /dev/null &
     pids+=("$!")
   done
@@ -381,6 +380,12 @@ measure_level() {
   for ((idx = 0; idx < NUM_CLIENT_HOSTS; idx++)); do
     [ "${host_counts[$idx]}" -gt 0 ] || continue
     local ch="${CLIENT_HOSTS_ARR[$idx]}"
+    # Per-host remote dir (EXPERIMENT_NAME=${experiment_name}_h${idx} above): Grid5000 shares
+    # $HOME via NFS across every host at a site, so a *shared* remote path here would let one
+    # host's cleanup (rm -rf below) delete a directory another host is still rsync-fetching
+    # from -- confirmed the hard way as "Stale file handle" errors on 3 of 4 client hosts
+    # every level once NUM_CLIENT_HOSTS>1 was exercised for real.
+    local remote_level_dir="${REMOTE_DIR}/results/lite_benchmark/${experiment_name}_h${idx}"
     rsync_j --exclude='wallet.json' --exclude='keystore.json' \
       "${ch}:${remote_level_dir}/" "${level_dir}/" || \
       echo "  warning: failed to fetch level ${n} (attempt ${attempt}) from ${ch}" >&2

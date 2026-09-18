@@ -37,15 +37,24 @@ set -euo pipefail
 #   CALIBRATION_RUNTIME_SECONDS  (defaults 20, 50, 5, 15) the fixed load applied to every combo
 #   RAMP_MAX_CLIENTS, RAMP_CLIENT_STEP_SCHEDULE, RAMP_RUNTIME_SECONDS, RAMP_CHAINS_PER_CLIENT,
 #   RAMP_BPS_PER_CLIENT  (defaults 200, "40 10", 10, 5, 50) passed to find_max_tps_grid5k.sh
+#   CLUSTER_LABEL         (default: inferred from VALIDATOR_HOSTS[0], the part before its first
+#                         "-", e.g. "gros-109.nancy..." -> "gros") prefixes every output path
+#                         (summary CSVs, calibration dirs, archive dirs) so two sweeps against
+#                         different clusters/reservations never collide on the same filename --
+#                         confirmed the hard way running a gros sweep and a grvingt sweep at the
+#                         same time: both defaulted to identical "gros_<label>.csv" paths
+#                         (leftover from when this script only ever targeted gros) and started
+#                         overwriting each other's calibration/archive directories mid-run.
 #   OUT_ROOT              (default ./results) calibration summaries + ramp summary CSVs land
 #                         under here
 #   CLIENT_ARCHIVE_ROOT   (default ./results/graphs_data) every ramp's per-level, per-client
 #                         transfers.csv is archived under
-#                         ${CLIENT_ARCHIVE_ROOT}/${N}val_${mode}_raw/
+#                         ${CLIENT_ARCHIVE_ROOT}/${CLUSTER_LABEL}_${N}val_${mode}_raw/
 #   STOP_COMMITTEE_AFTER  (default true) passed through to both sub-scripts
 
 VALIDATOR_HOSTS="${VALIDATOR_HOSTS:?set VALIDATOR_HOSTS to a space-separated list of hosts}"
 read -ra ALL_VALIDATOR_HOSTS_ARR <<< "${VALIDATOR_HOSTS}"
+CLUSTER_LABEL="${CLUSTER_LABEL:-${ALL_VALIDATOR_HOSTS_ARR[0]%%-*}}"
 CLIENT_HOST="${CLIENT_HOST:?set CLIENT_HOST}"
 RAMP_CLIENT_HOSTS="${RAMP_CLIENT_HOSTS:-${CLIENT_HOST}}"
 SSH_PROXY_JUMP="${SSH_PROXY_JUMP:-}"
@@ -108,7 +117,7 @@ for n in ${VALIDATOR_COUNTS}; do
   hosts_n="${ALL_VALIDATOR_HOSTS_ARR[*]:0:${n}}"
 
   for mode in ${TRAFFIC_MODES}; do
-    label="${n}val_${mode}"
+    label="${CLUSTER_LABEL}_${n}val_${mode}"
     echo ""
     echo "########## ${label}: calibrating proxy/storage/shard core split ##########"
     calib_out="${OUT_ROOT}/core_split_grid5k/${label}"
@@ -145,11 +154,11 @@ for n in ${VALIDATOR_COUNTS}; do
       MAX_CLIENTS="${RAMP_MAX_CLIENTS}" CLIENT_STEP_SCHEDULE="${RAMP_CLIENT_STEP_SCHEDULE}" \
       RUNTIME_SECONDS="${RAMP_RUNTIME_SECONDS}" \
       CLIENT_ARCHIVE_DIR="${archive_dir}" \
-      SUMMARY_CSV_PATH="${OUT_ROOT}/gros_${label}.csv" \
+      SUMMARY_CSV_PATH="${OUT_ROOT}/${label}.csv" \
       STOP_COMMITTEE_AFTER="${STOP_COMMITTEE_AFTER}" \
       "${LOCAL_DIR}/scripts/find_max_tps_grid5k.sh"
 
-    echo "==> ${label}: done. Summary: ${OUT_ROOT}/gros_${label}.csv, archived data: ${archive_dir}"
+    echo "==> ${label}: done. Summary: ${OUT_ROOT}/${label}.csv, archived data: ${archive_dir}"
   done
 done
 

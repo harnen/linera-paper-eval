@@ -64,14 +64,22 @@ set -euo pipefail
 #                          in mixed/full traffic modes, chains still send cross-chain messages
 #                          but never drain their own inboxes, isolating the cost of sending
 #                          messages from the cost of receiving/processing them
-#   MAX_CLIENTS            (default 20) ramp ceiling
+#   MAX_CLIENTS            (default 200, was 20) ramp ceiling -- raised because
+#                          FAILURES_ONLY now defaults to true (see below): a real max-TPS
+#                          search needs real headroom to climb into before hitting the
+#                          ceiling, and the old MAX_CLIENTS=20 default left almost no room.
 #   RUNTIME_SECONDS        (default 20) duration of each level
 #   MIN_ACHIEVED_FRACTION  (default 0.8) stop when achieved throughput falls below this
 #                          fraction of requested throughput -- ignored when FAILURES_ONLY=true
-#   FAILURES_ONLY          (default false) if true, only stop the ramp when failed > 0;
+#   FAILURES_ONLY          (default true, was false) only stop the ramp when failed > 0;
 #                          achieved-throughput is still measured and printed, just not used
-#                          to stop early. Useful when you just want to know where things
-#                          start actually breaking, regardless of latency/throughput dips.
+#                          to stop early. Confirmed this session (both against a real
+#                          committee and on a single-machine testbed) that the
+#                          achieved/requested-throughput floor routinely cut ramps off tens of
+#                          percent below real capacity -- one run that "ceilinged" at ~415K
+#                          TPS on that floor kept climbing to over 1M once left to run past
+#                          it. Set FAILURES_ONLY=false to restore the old, more conservative
+#                          stopping behavior.
 #   START_CLIENTS          (default 1) start the ramp at this client count instead of 1 --
 #                          lets you re-probe a narrower, higher range quickly without
 #                          re-running every lower level (the chain pool is still sized for
@@ -156,10 +164,10 @@ SKIP_MESSAGE_PROCESSING="${SKIP_MESSAGE_PROCESSING:-false}"
 MAX_DESTINATIONS_PER_BLOCK="${MAX_DESTINATIONS_PER_BLOCK:-}"
 MAX_INCOMING_BUNDLES_PER_BLOCK="${MAX_INCOMING_BUNDLES_PER_BLOCK:-}"
 TRAFFIC_MODE="${TRAFFIC_MODE:-independent}"
-MAX_CLIENTS="${MAX_CLIENTS:-20}"
+MAX_CLIENTS="${MAX_CLIENTS:-200}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-20}"
 MIN_ACHIEVED_FRACTION="${MIN_ACHIEVED_FRACTION:-0.8}"
-FAILURES_ONLY="${FAILURES_ONLY:-false}"
+FAILURES_ONLY="${FAILURES_ONLY:-true}"
 START_CLIENTS="${START_CLIENTS:-1}"
 CLIENT_STEP="${CLIENT_STEP:-1}"
 CLIENT_STEP_SCHEDULE="${CLIENT_STEP_SCHEDULE:-${CLIENT_STEP}}"

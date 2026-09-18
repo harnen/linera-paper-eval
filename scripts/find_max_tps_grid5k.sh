@@ -51,10 +51,23 @@ set -euo pipefail
 #   STORAGE_TOKIO_THREADS  (default 0 = storage-server's own default)
 #   CHAINS_PER_CLIENT, BPS_PER_CLIENT, TRANSACTIONS_PER_BLOCK[_FILE|_SCALE], TRAFFIC_MODE,
 #   LIGHT_CERTIFICATES, CLIENT_MODE, CLIENT_TOKIO_THREADS, SIMULATED_LATENCY_MS,
-#   SKIP_MESSAGE_PROCESSING, MAX_CLIENTS, RUNTIME_SECONDS, MIN_ACHIEVED_FRACTION,
-#   FAILURES_ONLY, START_CLIENTS,
+#   SKIP_MESSAGE_PROCESSING, RUNTIME_SECONDS, MIN_ACHIEVED_FRACTION,
+#   START_CLIENTS,
 #   CLIENT_STEP, CLIENT_STEP_SCHEDULE, CONFIRM_STOP_RETRIES, SUMMARY_CSV_PATH,
 #   CLIENT_ARCHIVE_DIR, CLEAN_LEVEL_ON_CLIENT
+#   MAX_CLIENTS            (default 200, was 20) ramp ceiling -- raised because
+#                          FAILURES_ONLY now defaults to true (see below): a real max-TPS
+#                          search needs real headroom to climb into before hitting the
+#                          ceiling, and the old MAX_CLIENTS=20 default left almost no room.
+#   FAILURES_ONLY          (default true, was false) only stop the ramp on a real failure
+#                          (failed > 0), not on MIN_ACHIEVED_FRACTION. Confirmed this session
+#                          (both here and on a single-machine testbed) that the
+#                          achieved/requested-throughput floor routinely cut ramps off tens of
+#                          percent below the committee's real capacity -- e.g. a run that
+#                          "ceilinged" at ~415K TPS kept climbing to over 1M once left to run
+#                          past that floor. Set FAILURES_ONLY=false to restore the old
+#                          behavior (still ignores the p95-latency check, which was removed
+#                          entirely, not just gated, for the same reason).
 #                          identical meaning to find_max_tps.sh -- see there for the full
 #                          rationale of each (especially CLIENT_STEP_SCHEDULE's coarse-to-fine
 #                          search and CONFIRM_STOP_RETRIES's anti-downward-bias retry)
@@ -93,10 +106,10 @@ SKIP_MESSAGE_PROCESSING="${SKIP_MESSAGE_PROCESSING:-false}"
 MAX_DESTINATIONS_PER_BLOCK="${MAX_DESTINATIONS_PER_BLOCK:-}"
 MAX_INCOMING_BUNDLES_PER_BLOCK="${MAX_INCOMING_BUNDLES_PER_BLOCK:-}"
 TRAFFIC_MODE="${TRAFFIC_MODE:-independent}"
-MAX_CLIENTS="${MAX_CLIENTS:-20}"
+MAX_CLIENTS="${MAX_CLIENTS:-200}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-20}"
 MIN_ACHIEVED_FRACTION="${MIN_ACHIEVED_FRACTION:-0.8}"
-FAILURES_ONLY="${FAILURES_ONLY:-false}"
+FAILURES_ONLY="${FAILURES_ONLY:-true}"
 START_CLIENTS="${START_CLIENTS:-1}"
 CLIENT_STEP="${CLIENT_STEP:-1}"
 CLIENT_STEP_SCHEDULE="${CLIENT_STEP_SCHEDULE:-${CLIENT_STEP}}"

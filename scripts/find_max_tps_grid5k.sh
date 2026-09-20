@@ -55,6 +55,15 @@ set -euo pipefail
 #   START_CLIENTS,
 #   CLIENT_STEP, CLIENT_STEP_SCHEDULE, CONFIRM_STOP_RETRIES, SUMMARY_CSV_PATH,
 #   CLIENT_ARCHIVE_DIR, CLEAN_LEVEL_ON_CLIENT
+#   PROVISION_PARALLELISM  (default 1) when >1, provisions the chain pool via
+#                          provision_super_owner_chains_parallel.sh instead of the serial
+#                          provision_super_owner_chains.sh -- opens this many independent
+#                          "shard" chains first, then provisions the pool concurrently across
+#                          them (each shard's block history is independent, so this is
+#                          genuinely parallel, unlike batching more into one chain's blocks).
+#                          Large pools (tens of thousands of chains) provision roughly
+#                          PROVISION_PARALLELISM times faster. Confirmed via a real ~12s/block
+#                          measurement on paradoxe: 100,000 chains took ~22 minutes serially.
 #   MAX_CLIENTS            (default 200, was 20) ramp ceiling -- raised because
 #                          FAILURES_ONLY now defaults to true (see below): a real max-TPS
 #                          search needs real headroom to climb into before hitting the
@@ -94,6 +103,7 @@ RESERVED_CORES="${RESERVED_CORES:-2}"
 STORAGE_CORES="${STORAGE_CORES:-0}"
 STORAGE_TOKIO_THREADS="${STORAGE_TOKIO_THREADS:-0}"
 CHAINS_PER_CLIENT="${CHAINS_PER_CLIENT:-5}"
+PROVISION_PARALLELISM="${PROVISION_PARALLELISM:-1}"
 BPS_PER_CLIENT="${BPS_PER_CLIENT:-50}"
 TRANSACTIONS_PER_BLOCK="${TRANSACTIONS_PER_BLOCK:-1}"
 TRANSACTIONS_PER_BLOCK_FILE="${TRANSACTIONS_PER_BLOCK_FILE:-}"
@@ -195,6 +205,7 @@ for ch in "${CLIENT_HOSTS_ARR[@]}"; do
     rsync_j "${bin_src}/linera" "${bin_src}/linera-lite-benchmark" "${ch}:${REMOTE_DIR}/bin/"
   fi
   scp_j "${LOCAL_DIR}/scripts/provision_super_owner_chains.sh" \
+    "${LOCAL_DIR}/scripts/provision_super_owner_chains_parallel.sh" \
     "${LOCAL_DIR}/scripts/run_lite_benchmark_parallel.sh" \
     "${ch}:${REMOTE_DIR}/scripts/"
   ssh_j "${ch}" "chmod +x ${REMOTE_DIR}/bin/* ${REMOTE_DIR}/scripts/*.sh"
@@ -205,11 +216,19 @@ for ch in "${CLIENT_HOSTS_ARR[@]}"; do
 done
 
 pool_size=$((MAX_CLIENTS * CHAINS_PER_CLIENT))
-echo "==> [4/6] Provisioning ${pool_size} super-owner chains on ${CLIENT_HOST}"
-ssh_j "${CLIENT_HOST}" "cd ${REMOTE_DIR} && \
-  LINERA_WALLET=./admin_wallet.json LINERA_KEYSTORE=./admin_keystore.json \
-  NUM_CHAINS=${pool_size} OUTPUT_FILE=./chain_pool.txt \
-  ./scripts/provision_super_owner_chains.sh"
+if [ "${PROVISION_PARALLELISM}" -gt 1 ]; then
+  echo "==> [4/6] Provisioning ${pool_size} super-owner chains on ${CLIENT_HOST} (${PROVISION_PARALLELISM}-way parallel)"
+  ssh_j "${CLIENT_HOST}" "cd ${REMOTE_DIR} && \
+    LINERA_WALLET=./admin_wallet.json LINERA_KEYSTORE=./admin_keystore.json \
+    NUM_CHAINS=${pool_size} OUTPUT_FILE=./chain_pool.txt PARALLELISM=${PROVISION_PARALLELISM} \
+    ./scripts/provision_super_owner_chains_parallel.sh"
+else
+  echo "==> [4/6] Provisioning ${pool_size} super-owner chains on ${CLIENT_HOST}"
+  ssh_j "${CLIENT_HOST}" "cd ${REMOTE_DIR} && \
+    LINERA_WALLET=./admin_wallet.json LINERA_KEYSTORE=./admin_keystore.json \
+    NUM_CHAINS=${pool_size} OUTPUT_FILE=./chain_pool.txt \
+    ./scripts/provision_super_owner_chains.sh"
+fi
 
 if [ "${NUM_CLIENT_HOSTS}" -gt 1 ]; then
   # All hosts run clients against the same global chain pool (disjoint index ranges via

@@ -174,6 +174,7 @@ python3 "${build_script_dir}/build_client_wallets.py" \
   --chains-per-client "${CHAINS_PER_CLIENT}" --outdir "${outdir}"
 
 pids=()
+pid_client_dirs=()
 for i in $(seq "$((CLIENT_INDEX_OFFSET + 1))" "$((CLIENT_INDEX_OFFSET + NUM_CLIENTS))"); do
   start_line=$(( (i - 1) * CHAINS_PER_CLIENT + 1 ))
   end_line=$(( i * CHAINS_PER_CLIENT ))
@@ -223,6 +224,7 @@ for i in $(seq "$((CLIENT_INDEX_OFFSET + 1))" "$((CLIENT_INDEX_OFFSET + NUM_CLIE
     --runtime-in-seconds "${RUNTIME_SECONDS}" \
     > "${client_dir}/lite_benchmark.log" 2>&1 &
   pids+=($!)
+  pid_client_dirs+=("${client_dir}")
 done
 
 if [ -n "${BPS_SCHEDULE}" ]; then
@@ -231,8 +233,17 @@ else
   echo "==> ${NUM_CLIENTS} client(s) running (requested total: $((NUM_CLIENTS * BPS_PER_CLIENT)) bps), waiting ~${RUNTIME_SECONDS}s..."
 fi
 failed=0
-for pid in "${pids[@]}"; do
-  wait "${pid}" || failed=$((failed + 1))
+for idx in "${!pids[@]}"; do
+  # A client that dies before ever writing to transfers.csv (e.g. it couldn't even establish
+  # a TCP connection to the validator -- a real signal at very high concurrent-client counts)
+  # is invisible to find_max_tps_grid5k.sh's committed/failed accounting, which only reads
+  # transfers.csv: a level where a growing fraction of clients silently fail to connect would
+  # otherwise keep reporting "good" all the way to MAX_CLIENTS. Mark it explicitly so the
+  # caller can fold it into its real failure count.
+  if ! wait "${pids[$idx]}"; then
+    failed=$((failed + 1))
+    touch "${pid_client_dirs[$idx]}/PROCESS_FAILED"
+  fi
 done
 
 if [ "${failed}" -gt 0 ]; then

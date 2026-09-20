@@ -439,6 +439,16 @@ measure_level() {
   done
   sort -n -o "${durations_file}" "${durations_file}"
 
+  # A client whose process died before ever writing transfers.csv (e.g. it couldn't establish
+  # a TCP connection to the validator in time -- a real signal at very high concurrent-client
+  # counts) contributes nothing to the committed/failed counts above, so without this a level
+  # where a growing fraction of clients silently fail to connect would keep reporting "good"
+  # all the way to MAX_CLIENTS instead of ever tripping FAILURES_ONLY's stop condition.
+  # run_lite_benchmark_parallel.sh marks each such client with a PROCESS_FAILED sentinel file.
+  local process_failed
+  process_failed="$(find "${level_dir}" -maxdepth 2 -name PROCESS_FAILED 2>/dev/null | wc -l)"
+  failed=$((failed + process_failed))
+
   local p25_us p50_us p95_us p25_ms p50_ms p95_ms achieved_bps achieved_tps
   p25_us="$(percentile "${durations_file}" 25)"
   p50_us="$(percentile "${durations_file}" 50)"
@@ -456,7 +466,7 @@ measure_level() {
 
   LEVEL_STOP_REASON=""
   if [ "${failed}" -gt 0 ]; then
-    LEVEL_STOP_REASON="${failed} failed block(s)"
+    LEVEL_STOP_REASON="${failed} failed block(s)/client(s) (incl. ${process_failed} that never connected)"
   elif [ "${FAILURES_ONLY}" != "true" ] && awk -v a="${achieved_bps}" -v r="${requested_bps}" -v f="${MIN_ACHIEVED_FRACTION}" 'BEGIN{exit !(a < r*f)}'; then
     LEVEL_STOP_REASON="achieved ${achieved_bps} BPS is below ${MIN_ACHIEVED_FRACTION}x requested ${requested_bps}"
   fi

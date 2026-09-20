@@ -158,21 +158,27 @@ else
   rate_args=(--bps "${BPS_PER_CLIENT}")
 fi
 
+# linera-persistent takes a non-blocking exclusive flock on every wallet/keystore open, even
+# for reads (by design -- see linera-persistent/src/file.rs). Pointing every parallel client at
+# the same wallet file means all but one fail immediately with "Resource temporarily
+# unavailable", so every client needs its own wallet/keystore file. Copying the *entire* admin
+# wallet per client doesn't scale (31.5MB at a 100,050-chain pool, times thousands of clients,
+# blew through the Grid5000 NFS home quota and silently corrupted a run) -- build each client a
+# minimal wallet/keystore containing only its own CHAINS_PER_CLIENT chains/keys instead, in one
+# pass over the admin files rather than per-client.
+build_script_dir="$(cd "$(dirname "$0")" && pwd)"
+python3 "${build_script_dir}/build_client_wallets.py" \
+  --wallet "${LINERA_WALLET}" --keystore "${LINERA_KEYSTORE}" \
+  --chain-ids-file "${CHAIN_IDS_FILE}" \
+  --client-index-offset "${CLIENT_INDEX_OFFSET}" --num-clients "${NUM_CLIENTS}" \
+  --chains-per-client "${CHAINS_PER_CLIENT}" --outdir "${outdir}"
+
 pids=()
 for i in $(seq "$((CLIENT_INDEX_OFFSET + 1))" "$((CLIENT_INDEX_OFFSET + NUM_CLIENTS))"); do
   start_line=$(( (i - 1) * CHAINS_PER_CLIENT + 1 ))
   end_line=$(( i * CHAINS_PER_CLIENT ))
   chains_csv="$(sed -n "${start_line},${end_line}p" "${CHAIN_IDS_FILE}" | paste -sd,)"
   client_dir="${outdir}/client_${i}"
-  mkdir -p "${client_dir}"
-
-  # linera-persistent takes a non-blocking exclusive flock on every wallet/keystore open,
-  # even for reads (by design -- see linera-persistent/src/file.rs). Pointing every parallel
-  # client at the same wallet file means all but one fail immediately with "Resource
-  # temporarily unavailable", so give each client its own copy (read-only content, safe to
-  # duplicate -- linera-lite-benchmark never writes back to it).
-  cp "${LINERA_WALLET}" "${client_dir}/wallet.json"
-  cp "${LINERA_KEYSTORE}" "${client_dir}/keystore.json"
 
   light_cert_args=()
   if [ "${LIGHT_CERTIFICATES}" = "true" ]; then

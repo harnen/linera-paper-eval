@@ -60,7 +60,11 @@ declare -A RTT_MS=(
 )
 
 rtt_between() {
-  local a="$1" b="$2" key="${a},${b}" rkey="${b},${a}"
+  local a b key rkey
+  a="$1"
+  b="$2"
+  key="${a},${b}"
+  rkey="${b},${a}"
   if [ -n "${RTT_MS[${key}]+x}" ]; then echo "${RTT_MS[${key}]}"; return; fi
   if [ -n "${RTT_MS[${rkey}]+x}" ]; then echo "${RTT_MS[${rkey}]}"; return; fi
   echo "error: no RTT entry for ${a} <-> ${b}" >&2; exit 1

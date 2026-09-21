@@ -37,6 +37,11 @@ set -euo pipefail
 #   CALIBRATION_RUNTIME_SECONDS  (defaults 20, 50, 5, 15) the fixed load applied to every combo
 #   RAMP_MAX_CLIENTS, RAMP_CLIENT_STEP_SCHEDULE, RAMP_RUNTIME_SECONDS, RAMP_CHAINS_PER_CLIENT,
 #   RAMP_BPS_PER_CLIENT  (defaults 200, "40 10", 10, 5, 50) passed to find_max_tps_grid5k.sh
+#   PROVISION_PARALLELISM (default 1) passed to find_max_tps_grid5k.sh -- see there for
+#                         rationale; set above 1 whenever RAMP_MAX_CLIENTS x RAMP_CHAINS_PER_CLIENT
+#                         is large enough that serial chain-pool provisioning would dominate
+#                         wall-clock time across the sweep's VALIDATOR_COUNTS x TRAFFIC_MODES
+#                         combinations
 #   CLUSTER_LABEL         (default: inferred from VALIDATOR_HOSTS[0], the part before its first
 #                         "-", e.g. "gros-109.nancy..." -> "gros") prefixes every output path
 #                         (summary CSVs, calibration dirs, archive dirs) so two sweeps against
@@ -75,6 +80,7 @@ RAMP_CLIENT_STEP_SCHEDULE="${RAMP_CLIENT_STEP_SCHEDULE:-40 10}"
 RAMP_RUNTIME_SECONDS="${RAMP_RUNTIME_SECONDS:-10}"
 RAMP_CHAINS_PER_CLIENT="${RAMP_CHAINS_PER_CLIENT:-5}"
 RAMP_BPS_PER_CLIENT="${RAMP_BPS_PER_CLIENT:-50}"
+PROVISION_PARALLELISM="${PROVISION_PARALLELISM:-1}"
 OUT_ROOT="${OUT_ROOT:-./results}"
 CLIENT_ARCHIVE_ROOT="${CLIENT_ARCHIVE_ROOT:-./results/graphs_data}"
 STOP_COMMITTEE_AFTER="${STOP_COMMITTEE_AFTER:-true}"
@@ -152,7 +158,7 @@ for n in ${VALIDATOR_COUNTS}; do
       TRANSACTIONS_PER_BLOCK_FILE="${TRANSACTIONS_PER_BLOCK_FILE}" \
       CHAINS_PER_CLIENT="${RAMP_CHAINS_PER_CLIENT}" BPS_PER_CLIENT="${RAMP_BPS_PER_CLIENT}" \
       MAX_CLIENTS="${RAMP_MAX_CLIENTS}" CLIENT_STEP_SCHEDULE="${RAMP_CLIENT_STEP_SCHEDULE}" \
-      RUNTIME_SECONDS="${RAMP_RUNTIME_SECONDS}" \
+      RUNTIME_SECONDS="${RAMP_RUNTIME_SECONDS}" PROVISION_PARALLELISM="${PROVISION_PARALLELISM}" \
       CLIENT_ARCHIVE_DIR="${archive_dir}" \
       SUMMARY_CSV_PATH="${OUT_ROOT}/${label}.csv" \
       STOP_COMMITTEE_AFTER="${STOP_COMMITTEE_AFTER}" \

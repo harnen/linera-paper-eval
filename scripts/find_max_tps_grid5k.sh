@@ -474,7 +474,17 @@ measure_level() {
     "${p25_ms}" "${p50_ms}" "${p95_ms}" "${validator_reserved_summary}" "${validator_storage_summary}" "${validator_shard_summary}" "${client_cpu_pct}")"
 
   LEVEL_STOP_REASON=""
-  if [ "${failed}" -gt 0 ]; then
+  if [ "${fail}" -ne 0 ] && [ "${committed}" -eq 0 ] && [ "${failed}" -eq 0 ]; then
+    # A client host's run_lite_benchmark_parallel.sh exited non-zero (e.g.
+    # build_client_wallets.py crashed before any client process started, so no
+    # per-client PROCESS_FAILED sentinel ever got written) yet committed/failed both
+    # read zero -- that's not "no traffic attempted", it's the host silently
+    # contributing nothing. Without this check the level below reports a false "good"
+    # with all-zero throughput (confirmed happening in practice at 10-validator mixed
+    # mode, n=6001: 5 client hosts crashed on a chain ID missing from the wallet, and
+    # the level still printed verdict=good, achieved_tps=0.0).
+    LEVEL_STOP_REASON="a client host's run script exited non-zero and reported zero committed/failed (see stderr above for the actual crash)"
+  elif [ "${failed}" -gt 0 ]; then
     LEVEL_STOP_REASON="${failed} failed block(s)/client(s) (incl. ${process_failed} that never connected)"
   elif [ "${FAILURES_ONLY}" != "true" ] && awk -v a="${achieved_bps}" -v r="${requested_bps}" -v f="${MIN_ACHIEVED_FRACTION}" 'BEGIN{exit !(a < r*f)}'; then
     LEVEL_STOP_REASON="achieved ${achieved_bps} BPS is below ${MIN_ACHIEVED_FRACTION}x requested ${requested_bps}"

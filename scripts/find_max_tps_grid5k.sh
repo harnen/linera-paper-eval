@@ -55,6 +55,14 @@ set -euo pipefail
 #   START_CLIENTS,
 #   CLIENT_STEP, CLIENT_STEP_SCHEDULE, CONFIRM_STOP_RETRIES, SUMMARY_CSV_PATH,
 #   CLIENT_ARCHIVE_DIR, CLEAN_LEVEL_ON_CLIENT
+#   REPEATS                (default 1) once a level is confirmed good, measure it REPEATS-1
+#                          more times (each an independent trial, not a retry) so the CSV
+#                          carries enough samples per level to compute mean/stddev/error bars
+#                          downstream instead of a single point estimate. Each repeat is its
+#                          own CSV row at the same clients/step with an incrementing attempt
+#                          number, exactly like the existing CONFIRM_STOP_RETRIES rows -- no
+#                          CSV schema change. Repeats do not run for levels that turn out bad
+#                          (those already got CONFIRM_STOP_RETRIES's retry treatment instead).
 #   PROVISION_PARALLELISM  (default 1) when >1, provisions the chain pool via
 #                          provision_super_owner_chains_parallel.sh instead of the serial
 #                          provision_super_owner_chains.sh -- opens this many independent
@@ -124,6 +132,7 @@ START_CLIENTS="${START_CLIENTS:-1}"
 CLIENT_STEP="${CLIENT_STEP:-1}"
 CLIENT_STEP_SCHEDULE="${CLIENT_STEP_SCHEDULE:-${CLIENT_STEP}}"
 CONFIRM_STOP_RETRIES="${CONFIRM_STOP_RETRIES:-1}"
+REPEATS="${REPEATS:-1}"
 CLIENT_ARCHIVE_DIR="${CLIENT_ARCHIVE_DIR:-}"
 CLEAN_LEVEL_ON_CLIENT="${CLEAN_LEVEL_ON_CLIENT:-true}"
 STOP_COMMITTEE_AFTER="${STOP_COMMITTEE_AFTER:-true}"
@@ -492,6 +501,10 @@ level_is_good() {
     if [ -z "${LEVEL_STOP_REASON}" ]; then
       LEVEL_VERDICT[$n]="good"
       LEVEL_LINE[$n]="${MEASURED_ROW}"
+      local rep
+      for ((rep = 1; rep < REPEATS; rep++)); do
+        measure_level "${n}" "$((attempt + rep))" "${step}"
+      done
       return 0
     fi
     if [ "${attempt}" -ge "${CONFIRM_STOP_RETRIES}" ]; then

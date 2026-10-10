@@ -114,7 +114,18 @@ CHAINS_PER_CLIENT="${CHAINS_PER_CLIENT:-5}"
 PROVISION_PARALLELISM="${PROVISION_PARALLELISM:-1}"
 BPS_PER_CLIENT="${BPS_PER_CLIENT:-50}"
 TRANSACTIONS_PER_BLOCK="${TRANSACTIONS_PER_BLOCK:-1}"
-TRANSACTIONS_PER_BLOCK_FILE="${TRANSACTIONS_PER_BLOCK_FILE:-}"
+# Defaults to the paper's Ethereum trace -- every run of this script must match that block-size
+# distribution unless a caller deliberately opts out (TRANSACTIONS_PER_BLOCK_FILE=none), so this
+# can't silently regress to a flat 1-tx/block run the way it used to (see commit history: that
+# gap went unnoticed for weeks across the whole repeats campaign). Deployed to each client host
+# further down, header-stripped, the same way scheduled_paradoxe_run.sh always did it manually.
+TRANSACTIONS_PER_BLOCK_FILE="${TRANSACTIONS_PER_BLOCK_FILE-__default__}"
+if [ "${TRANSACTIONS_PER_BLOCK_FILE}" = "__default__" ]; then
+  TRANSACTIONS_PER_BLOCK_FILE="$(cd "$(dirname "$0")/.." && pwd)/ethereum_txs_per_block_19m_to_21m.csv"
+fi
+if [ "${TRANSACTIONS_PER_BLOCK_FILE}" = "none" ]; then
+  TRANSACTIONS_PER_BLOCK_FILE=""
+fi
 TRANSACTIONS_PER_BLOCK_SCALE="${TRANSACTIONS_PER_BLOCK_SCALE:-1.0}"
 LIGHT_CERTIFICATES="${LIGHT_CERTIFICATES:-false}"
 CLIENT_MODE="${CLIENT_MODE:-lite}"
@@ -161,6 +172,11 @@ scp_j() {
 
 quorum=$(( (NUM_VALIDATORS + (NUM_VALIDATORS + 2) / 3 + 1) / 2 ))
 echo "==> Committee: ${NUM_VALIDATORS} validator(s) (quorum ${quorum}), hosts: ${VALIDATOR_HOSTS_ARR[*]}"
+if [ -n "${TRANSACTIONS_PER_BLOCK_FILE}" ]; then
+  echo "==> Block size: Ethereum trace (${TRANSACTIONS_PER_BLOCK_FILE}, scale ${TRANSACTIONS_PER_BLOCK_SCALE})"
+else
+  echo "==> Block size: FLAT ${TRANSACTIONS_PER_BLOCK} tx/block (TRANSACTIONS_PER_BLOCK_FILE explicitly disabled) -- NOT the paper's methodology"
+fi
 
 cargo_flags=()
 target_dir="debug"
@@ -223,6 +239,25 @@ for ch in "${CLIENT_HOSTS_ARR[@]}"; do
   scp_j "${committee_state_dir}/admin_wallet.json" "${committee_state_dir}/admin_keystore.json" \
     "${committee_state_dir}/genesis.json" "${ch}:${REMOTE_DIR}/"
 done
+
+remote_tx_block_file=""
+if [ -n "${TRANSACTIONS_PER_BLOCK_FILE}" ]; then
+  [ -f "${TRANSACTIONS_PER_BLOCK_FILE}" ] || {
+    echo "TRANSACTIONS_PER_BLOCK_FILE ${TRANSACTIONS_PER_BLOCK_FILE} not found locally" >&2
+    exit 1
+  }
+  tx_block_basename="$(basename "${TRANSACTIONS_PER_BLOCK_FILE}")"
+  remote_tx_block_file="./${tx_block_basename}"
+  tx_block_stripped="$(mktemp)"
+  # Header-stripped once locally, then the same stripped copy is deployed to every client host --
+  # matches what scheduled_paradoxe_run.sh always did by hand for the Ethereum trace.
+  tail -n +2 "${TRANSACTIONS_PER_BLOCK_FILE}" > "${tx_block_stripped}"
+  echo "==> Deploying block-size trace (${tx_block_basename}) to ${NUM_CLIENT_HOSTS} client host(s)"
+  for ch in "${CLIENT_HOSTS_ARR[@]}"; do
+    scp_j "${tx_block_stripped}" "${ch}:${REMOTE_DIR}/${tx_block_basename}"
+  done
+  rm -f "${tx_block_stripped}"
+fi
 
 pool_size=$((MAX_CLIENTS * CHAINS_PER_CLIENT))
 if [ "${PROVISION_PARALLELISM}" -gt 1 ]; then
@@ -365,7 +400,7 @@ measure_level() {
       CHAIN_IDS_FILE=./chain_pool.txt NUM_CLIENTS=${host_counts[$idx]} \
       CLIENT_INDEX_OFFSET=${host_offsets[$idx]} CHAINS_PER_CLIENT=${CHAINS_PER_CLIENT} \
       BPS_PER_CLIENT=${BPS_PER_CLIENT} TRANSACTIONS_PER_BLOCK=${TRANSACTIONS_PER_BLOCK} \
-      TRANSACTIONS_PER_BLOCK_FILE=${TRANSACTIONS_PER_BLOCK_FILE} \
+      TRANSACTIONS_PER_BLOCK_FILE=${remote_tx_block_file} \
       TRANSACTIONS_PER_BLOCK_SCALE=${TRANSACTIONS_PER_BLOCK_SCALE} \
       TRAFFIC_MODE=${TRAFFIC_MODE} LIGHT_CERTIFICATES=${LIGHT_CERTIFICATES} \
       CLIENT_MODE=${CLIENT_MODE} \

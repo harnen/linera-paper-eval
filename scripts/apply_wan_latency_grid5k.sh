@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Injects a realistic, per-pair WAN latency mesh between client hosts and validator hosts
-# using `tc netem` (real kernel-level packet delay), instead of the client-side-only
-# SIMULATED_LATENCY_MS flag (a single flat delay applied uniformly everywhere). Each
-# client/validator host is round-robin assigned to one of 6 AWS regions, using the exact
-# same region-to-region RTT matrix Mysticeti's own orchestrator ships (measured 2026-09-18,
-# see mysticeti/crates/simulator/examples/geography.yaml) -- so results are comparable
-# apples-to-apples between the two systems' benchmarks. For a pair with target RTT R, each
-# side gets R/2 ms of netem delay on its egress toward the other, so the two one-way delays
-# sum to the real measured round-trip.
+# Injects a realistic, per-pair WAN latency mesh between every host (client<->validator AND
+# validator<->validator) using `tc netem` (real kernel-level packet delay), instead of the
+# client-side-only SIMULATED_LATENCY_MS flag (a single flat delay applied uniformly everywhere).
+# Validator<->validator delay matters as much as client<->validator: committee members exchange
+# votes/certificates over what should be the same simulated WAN. Each host is round-robin
+# assigned to one of 6 AWS regions, using the exact same region-to-region RTT matrix Mysticeti's
+# own orchestrator ships (measured 2026-09-18, see mysticeti/crates/simulator/examples/geography.yaml)
+# -- so results are comparable apples-to-apples between the two systems' benchmarks. For a pair
+# with target RTT R, each side gets R/2 ms of netem delay on its egress toward the other, so the
+# two one-way delays sum to the real measured round-trip.
 #
 # Grid5000 nodes don't have passwordless `sudo`, but do have `sudo-g5k` (a Grid5000-specific
 # root escalation that works passwordlessly on your own OAR-reserved nodes) -- confirmed this
@@ -126,6 +127,21 @@ for vh in "${VALIDATOR_HOSTS_ARR[@]}"; do
     ssh_j "${vh}" "sudo-g5k tc class add dev ${HOST_IFACE[$vh]} parent 1: classid 1:${vclassid} htb rate 10gbit && \
       sudo-g5k tc qdisc add dev ${HOST_IFACE[$vh]} parent 1:${vclassid} handle ${vclassid}: netem delay ${half}ms && \
       sudo-g5k tc filter add dev ${HOST_IFACE[$vh]} protocol ip parent 1:0 prio 1 u32 match ip dst ${HOST_IP[$ch]}/32 flowid 1:${vclassid}"
+  done
+done
+
+echo "==> Applying validator <-> validator netem delay (committee consensus traffic)"
+vvclassid=700
+for vh1 in "${VALIDATOR_HOSTS_ARR[@]}"; do
+  for vh2 in "${VALIDATOR_HOSTS_ARR[@]}"; do
+    [ "${vh1}" = "${vh2}" ] && continue
+    rtt="$(rtt_between "${HOST_REGION[$vh1]}" "${HOST_REGION[$vh2]}")"
+    half="$(awk -v r="${rtt}" 'BEGIN{printf "%.2f", r/2}')"
+    vvclassid=$((vvclassid + 1))
+    echo "  ${vh1} (${HOST_REGION[$vh1]}) -> ${vh2} (${HOST_REGION[$vh2]}): RTT=${rtt}ms, delay=${half}ms each side"
+    ssh_j "${vh1}" "sudo-g5k tc class add dev ${HOST_IFACE[$vh1]} parent 1: classid 1:${vvclassid} htb rate 10gbit && \
+      sudo-g5k tc qdisc add dev ${HOST_IFACE[$vh1]} parent 1:${vvclassid} handle ${vvclassid}: netem delay ${half}ms && \
+      sudo-g5k tc filter add dev ${HOST_IFACE[$vh1]} protocol ip parent 1:0 prio 1 u32 match ip dst ${HOST_IP[$vh2]}/32 flowid 1:${vvclassid}"
   done
 done
 

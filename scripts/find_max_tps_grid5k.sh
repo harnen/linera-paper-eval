@@ -566,15 +566,45 @@ upper_bad=$((MAX_CLIENTS + 1))
 first_phase=true
 
 for step in ${CLIENT_STEP_SCHEDULE}; do
-  if [ "${step}" -lt 1 ]; then
-    echo "CLIENT_STEP_SCHEDULE entries must be >= 1, got '${step}'" >&2
-    exit 1
-  fi
+  # A step of the form "xN" (N a positive integer, e.g. "x2") is a geometric multiplier
+  # instead of a fixed additive increment: each level is N times the previous instead of
+  # +N clients. Lets an initial phase climb from a handful of clients to tens of thousands
+  # in a handful of levels (doubling: 10 levels covers a 1024x range) before handing off to
+  # an additive phase to bracket the real ceiling precisely -- a coarse binary-search-style
+  # climb, since a pure fixed step would need thousands of levels to cover the same range.
+  is_mult=false
+  mult_factor=1
+  case "${step}" in
+    x*)
+      is_mult=true
+      mult_factor="${step#x}"
+      case "${mult_factor}" in
+        ''|*[!0-9]*)
+          echo "CLIENT_STEP_SCHEDULE multiplicative entries must be 'x' followed by an integer >= 2, got '${step}'" >&2
+          exit 1
+          ;;
+      esac
+      if [ "${mult_factor}" -lt 2 ]; then
+        echo "CLIENT_STEP_SCHEDULE multiplicative entries must be 'x' followed by an integer >= 2, got '${step}'" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      if [ "${step}" -lt 1 ]; then
+        echo "CLIENT_STEP_SCHEDULE entries must be >= 1, got '${step}'" >&2
+        exit 1
+      fi
+      ;;
+  esac
   if [ "${first_phase}" = true ]; then
     n="${START_CLIENTS}"
     first_phase=false
   else
-    n=$((lower_good + step))
+    if [ "${is_mult}" = true ]; then
+      n=$((lower_good * mult_factor))
+    else
+      n=$((lower_good + step))
+    fi
     if [ $((lower_good + 1)) -ge "${upper_bad}" ]; then
       break
     fi
@@ -587,7 +617,11 @@ for step in ${CLIENT_STEP_SCHEDULE}; do
       upper_bad="${n}"
       break
     fi
-    n=$((n + step))
+    if [ "${is_mult}" = true ]; then
+      n=$((n * mult_factor))
+    else
+      n=$((n + step))
+    fi
   done
 done
 

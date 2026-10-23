@@ -38,7 +38,7 @@ set -euo pipefail
 #                         busiest range's CPU% is near 0, raise the load; if some range is
 #                         already pegged near 100%, that combo is capacity-bound and not a fair
 #                         comparison point at this load.
-#   TRANSACTIONS_PER_BLOCK, TRAFFIC_MODE, CLIENT_MODE, LIGHT_CERTIFICATES
+#   TRANSACTIONS_PER_BLOCK, TRAFFIC_MODE, CLIENT_MODE, LIGHT_CERTIFICATES, QUORUM_ONLY
 #                         passed through to run_lite_benchmark_parallel.sh (defaults 1,
 #                         independent, lite, false)
 #   TRANSACTIONS_PER_BLOCK_FILE (optional) path *on CLIENT_HOST* to a file with one block size
@@ -86,6 +86,7 @@ TRANSACTIONS_PER_BLOCK_SCALE="${TRANSACTIONS_PER_BLOCK_SCALE:-1.0}"
 TRAFFIC_MODE="${TRAFFIC_MODE:-independent}"
 CLIENT_MODE="${CLIENT_MODE:-lite}"
 LIGHT_CERTIFICATES="${LIGHT_CERTIFICATES:-false}"
+QUORUM_ONLY="${QUORUM_ONLY:-false}"
 STORAGE_TOKIO_THREADS="${STORAGE_TOKIO_THREADS:-0}"
 INITIAL_AMOUNT="${INITIAL_AMOUNT:-1000000000}"
 PERF_PROFILE="${PERF_PROFILE:-true}"
@@ -332,7 +333,8 @@ for combo in ${COMBOS}; do
     CHAIN_IDS_FILE=./chain_pool.txt NUM_CLIENTS=${NUM_CLIENTS} CHAINS_PER_CLIENT=${CHAINS_PER_CLIENT} \
     BPS_PER_CLIENT=${BPS_PER_CLIENT} TRANSACTIONS_PER_BLOCK=${TRANSACTIONS_PER_BLOCK} \
     TRANSACTIONS_PER_BLOCK_FILE=${TRANSACTIONS_PER_BLOCK_FILE} TRANSACTIONS_PER_BLOCK_SCALE=${TRANSACTIONS_PER_BLOCK_SCALE} \
-    TRAFFIC_MODE=${TRAFFIC_MODE} LIGHT_CERTIFICATES=${LIGHT_CERTIFICATES} CLIENT_MODE=${CLIENT_MODE} \
+    TRAFFIC_MODE=${TRAFFIC_MODE} LIGHT_CERTIFICATES=${LIGHT_CERTIFICATES} QUORUM_ONLY=${QUORUM_ONLY} \
+    CLIENT_MODE=${CLIENT_MODE} \
     RUNTIME_SECONDS=${RUNTIME_SECONDS} \
     EVAL_OUTPUT_DIR=./results EXPERIMENT_NAME=${experiment_name} \
     ./scripts/run_lite_benchmark_parallel.sh" >> "${combo_log}" 2>&1

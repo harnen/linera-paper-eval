@@ -46,6 +46,14 @@ set -euo pipefail
 #                          validators known to have voted for it (they already have the value
 #                          cached), instead of the full certificate -- shrinks the third of
 #                          three round trips per block
+#   QUORUM_ONLY            (default false) passed as --quorum-only when true: each block's two
+#                          validator round trips (vote gathering, certificate broadcast) stop as
+#                          soon as a quorum has responded, instead of waiting for literally
+#                          every validator in the committee -- see --quorum-only's own doc
+#                          comment in lite_benchmark.rs for the full rationale and the grace-
+#                          period mechanism. A separate benchmark mode, not a drop-in
+#                          replacement: existing results used the wait-for-everyone behavior, so
+#                          set this explicitly per run rather than assuming it's on.
 #   CLIENT_MODE            (default lite) passed as --client-mode: lite (3 RTTs/block, no local
 #                          storage/execution) or full (2 RTTs/block, a real ChainClient with
 #                          local in-memory storage that executes every block itself -- native
@@ -96,6 +104,7 @@ TRANSACTIONS_PER_BLOCK_FILE="${TRANSACTIONS_PER_BLOCK_FILE:-}"
 TRANSACTIONS_PER_BLOCK_SCALE="${TRANSACTIONS_PER_BLOCK_SCALE:-1.0}"
 TRAFFIC_MODE="${TRAFFIC_MODE:-independent}"
 LIGHT_CERTIFICATES="${LIGHT_CERTIFICATES:-false}"
+QUORUM_ONLY="${QUORUM_ONLY:-false}"
 CLIENT_MODE="${CLIENT_MODE:-lite}"
 CLIENT_TOKIO_THREADS="${CLIENT_TOKIO_THREADS:-}"
 SIMULATED_LATENCY_MS="${SIMULATED_LATENCY_MS:-}"
@@ -185,6 +194,10 @@ for i in $(seq "$((CLIENT_INDEX_OFFSET + 1))" "$((CLIENT_INDEX_OFFSET + NUM_CLIE
   if [ "${LIGHT_CERTIFICATES}" = "true" ]; then
     light_cert_args=(--light-certificates)
   fi
+  quorum_only_args=()
+  if [ "${QUORUM_ONLY}" = "true" ]; then
+    quorum_only_args=(--quorum-only)
+  fi
   tokio_threads_args=()
   if [ -n "${CLIENT_TOKIO_THREADS}" ]; then
     tokio_threads_args=(--tokio-threads "${CLIENT_TOKIO_THREADS}")
@@ -215,6 +228,7 @@ for i in $(seq "$((CLIENT_INDEX_OFFSET + 1))" "$((CLIENT_INDEX_OFFSET + NUM_CLIE
     --traffic-mode "${TRAFFIC_MODE}" \
     --client-mode "${CLIENT_MODE}" \
     "${light_cert_args[@]}" \
+    "${quorum_only_args[@]}" \
     "${tokio_threads_args[@]}" \
     "${simulated_latency_args[@]}" \
     "${skip_message_processing_args[@]}" \

@@ -64,7 +64,7 @@ set -euo pipefail
 #                          number, exactly like the existing CONFIRM_STOP_RETRIES rows -- no
 #                          CSV schema change. Repeats do not run for levels that turn out bad
 #                          (those already got CONFIRM_STOP_RETRIES's retry treatment instead).
-#   PROVISION_PARALLELISM  (default 1) when >1, provisions the chain pool via
+#   PROVISION_PARALLELISM  (default 16, was 1) when >1, provisions the chain pool via
 #                          provision_super_owner_chains_parallel.sh instead of the serial
 #                          provision_super_owner_chains.sh -- opens this many independent
 #                          "shard" chains first, then provisions the pool concurrently across
@@ -72,11 +72,19 @@ set -euo pipefail
 #                          genuinely parallel, unlike batching more into one chain's blocks).
 #                          Large pools (tens of thousands of chains) provision roughly
 #                          PROVISION_PARALLELISM times faster. Confirmed via a real ~12s/block
-#                          measurement on paradoxe: 100,000 chains took ~22 minutes serially.
-#   MAX_CLIENTS            (default 200, was 20) ramp ceiling -- raised because
-#                          FAILURES_ONLY now defaults to true (see below): a real max-TPS
-#                          search needs real headroom to climb into before hitting the
-#                          ceiling, and the old MAX_CLIENTS=20 default left almost no room.
+#                          measurement on paradoxe: 100,000 chains took ~22 minutes serially,
+#                          ~1-2 minutes at 16-way parallel. Raised from the old default of 1
+#                          alongside MAX_CLIENTS (below) so the bigger default chain pool
+#                          doesn't silently cost minutes of serial provisioning per combo.
+#   MAX_CLIENTS            (default 4000, was 200) ramp ceiling -- raised again because the
+#                          30v real-ceiling run (2026-10-16) showed independent traffic
+#                          plateauing ~600 clients and mixed/full ~241, both with zero failures,
+#                          so MAX_CLIENTS=200 silently truncated the climb below the real
+#                          plateau. 4000 gives ~6-16x headroom past those known plateaus while
+#                          staying cheap: chain-pool provisioning is parallelized
+#                          (PROVISION_PARALLELISM, see below) so a bigger pool costs seconds, not
+#                          minutes, and CLIENT_STEP_SCHEDULE's doubling phase only needs ~12
+#                          levels to reach it.
 #   FAILURES_ONLY          (default true, was false) only stop the ramp on a real failure
 #                          (failed > 0), not on MIN_ACHIEVED_FRACTION. Confirmed this session
 #                          (both here and on a single-machine testbed) that the
@@ -112,7 +120,7 @@ RESERVED_CORES="${RESERVED_CORES:-2}"
 STORAGE_CORES="${STORAGE_CORES:-0}"
 STORAGE_TOKIO_THREADS="${STORAGE_TOKIO_THREADS:-0}"
 CHAINS_PER_CLIENT="${CHAINS_PER_CLIENT:-5}"
-PROVISION_PARALLELISM="${PROVISION_PARALLELISM:-1}"
+PROVISION_PARALLELISM="${PROVISION_PARALLELISM:-16}"
 BPS_PER_CLIENT="${BPS_PER_CLIENT:-50}"
 TRANSACTIONS_PER_BLOCK="${TRANSACTIONS_PER_BLOCK:-1}"
 # Defaults to the paper's Ethereum trace -- every run of this script must match that block-size
@@ -137,13 +145,19 @@ SKIP_MESSAGE_PROCESSING="${SKIP_MESSAGE_PROCESSING:-false}"
 MAX_DESTINATIONS_PER_BLOCK="${MAX_DESTINATIONS_PER_BLOCK:-}"
 MAX_INCOMING_BUNDLES_PER_BLOCK="${MAX_INCOMING_BUNDLES_PER_BLOCK:-}"
 TRAFFIC_MODE="${TRAFFIC_MODE:-independent}"
-MAX_CLIENTS="${MAX_CLIENTS:-200}"
+MAX_CLIENTS="${MAX_CLIENTS:-4000}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-20}"
 MIN_ACHIEVED_FRACTION="${MIN_ACHIEVED_FRACTION:-0.8}"
 FAILURES_ONLY="${FAILURES_ONLY:-true}"
 START_CLIENTS="${START_CLIENTS:-1}"
 CLIENT_STEP="${CLIENT_STEP:-1}"
-CLIENT_STEP_SCHEDULE="${CLIENT_STEP_SCHEDULE:-${CLIENT_STEP}}"
+# Doubling phase to find the rough neighborhood fast, then a single 1000-client additive phase
+# to bracket it -- 1000 clients (50000 bps) is as fine a resolution as this project cares about,
+# so there's no point in the smaller additive steps (200/50/10) used earlier: they only bought
+# resolution nobody asked for, at the cost of several extra levels. See
+# feedback_grid5k_linera_benchmark_methodology memory point 7 for why multiplicative-first,
+# never pure-additive.
+CLIENT_STEP_SCHEDULE="${CLIENT_STEP_SCHEDULE:-x2 1000}"
 CONFIRM_STOP_RETRIES="${CONFIRM_STOP_RETRIES:-1}"
 REPEATS="${REPEATS:-1}"
 CLIENT_ARCHIVE_DIR="${CLIENT_ARCHIVE_DIR:-}"

@@ -36,12 +36,18 @@ set -euo pipefail
 #   CALIBRATION_NUM_CLIENTS, CALIBRATION_BPS_PER_CLIENT, CALIBRATION_CHAINS_PER_CLIENT,
 #   CALIBRATION_RUNTIME_SECONDS  (defaults 20, 50, 5, 15) the fixed load applied to every combo
 #   RAMP_MAX_CLIENTS, RAMP_CLIENT_STEP_SCHEDULE, RAMP_RUNTIME_SECONDS, RAMP_CHAINS_PER_CLIENT,
-#   RAMP_BPS_PER_CLIENT  (defaults 200, "40 10", 10, 5, 50) passed to find_max_tps_grid5k.sh
-#   PROVISION_PARALLELISM (default 1) passed to find_max_tps_grid5k.sh -- see there for
-#                         rationale; set above 1 whenever RAMP_MAX_CLIENTS x RAMP_CHAINS_PER_CLIENT
-#                         is large enough that serial chain-pool provisioning would dominate
-#                         wall-clock time across the sweep's VALIDATOR_COUNTS x TRAFFIC_MODES
-#                         combinations
+#   RAMP_BPS_PER_CLIENT  (defaults 4000, "x2 1000", 10, 5, 50) passed to find_max_tps_grid5k.sh.
+#                         The schedule doubles to find the rough neighborhood fast, then
+#                         brackets it with a single 1000-client additive pass -- 1000 clients
+#                         (50000 bps) is as fine a resolution as this project needs, so finer
+#                         additive steps just buy unneeded levels. See
+#                         feedback_grid5k_linera_benchmark_methodology memory point 7
+#                         (multiplicative-first, never pure-additive) for why.
+#   PROVISION_PARALLELISM (default 16) passed to find_max_tps_grid5k.sh -- see there for
+#                         rationale; matches RAMP_MAX_CLIENTS's bigger default so the larger
+#                         chain pool doesn't cost minutes of serial provisioning per combo. Set
+#                         to 1 only if RAMP_MAX_CLIENTS x RAMP_CHAINS_PER_CLIENT is small enough
+#                         that parallel shard setup isn't worth its own overhead.
 #   CLUSTER_LABEL         (default: inferred from VALIDATOR_HOSTS[0], the part before its first
 #                         "-", e.g. "gros-109.nancy..." -> "gros") prefixes every output path
 #                         (summary CSVs, calibration dirs, archive dirs) so two sweeps against
@@ -76,12 +82,12 @@ CALIBRATION_NUM_CLIENTS="${CALIBRATION_NUM_CLIENTS:-20}"
 CALIBRATION_BPS_PER_CLIENT="${CALIBRATION_BPS_PER_CLIENT:-50}"
 CALIBRATION_CHAINS_PER_CLIENT="${CALIBRATION_CHAINS_PER_CLIENT:-5}"
 CALIBRATION_RUNTIME_SECONDS="${CALIBRATION_RUNTIME_SECONDS:-15}"
-RAMP_MAX_CLIENTS="${RAMP_MAX_CLIENTS:-200}"
-RAMP_CLIENT_STEP_SCHEDULE="${RAMP_CLIENT_STEP_SCHEDULE:-40 10}"
+RAMP_MAX_CLIENTS="${RAMP_MAX_CLIENTS:-4000}"
+RAMP_CLIENT_STEP_SCHEDULE="${RAMP_CLIENT_STEP_SCHEDULE:-x2 1000}"
 RAMP_RUNTIME_SECONDS="${RAMP_RUNTIME_SECONDS:-10}"
 RAMP_CHAINS_PER_CLIENT="${RAMP_CHAINS_PER_CLIENT:-5}"
 RAMP_BPS_PER_CLIENT="${RAMP_BPS_PER_CLIENT:-50}"
-PROVISION_PARALLELISM="${PROVISION_PARALLELISM:-1}"
+PROVISION_PARALLELISM="${PROVISION_PARALLELISM:-16}"
 OUT_ROOT="${OUT_ROOT:-./results}"
 CLIENT_ARCHIVE_ROOT="${CLIENT_ARCHIVE_ROOT:-./results/graphs_data}"
 STOP_COMMITTEE_AFTER="${STOP_COMMITTEE_AFTER:-true}"

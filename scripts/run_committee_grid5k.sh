@@ -152,13 +152,43 @@ rsync_j() {
 # every host already has its own separate disk (e.g. sparta/yiannis-testbed).
 state_dir_for() { echo "${REMOTE_DIR}/state-$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '_')"; }
 
-if [ "${ACTION}" = "stop" ]; then
-  echo "==> Stopping committee on ${NUM_VALIDATORS} host(s)"
+# Every per-host loop below runs each host's work in its own backgrounded subshell and waits
+# for all of them, instead of one host at a time -- confirmed the hard way (2026-10-24, 30v
+# weekend run): even with ControlMaster reuse, a purely sequential 30-host loop with several
+# ssh/scp/rsync calls per host took >20min to get through just ONE of the ~7 per-host loops in
+# this script, which would have made a single committee bring-up take hours -- and this script
+# runs up to ~18 times across one sweep (once per calibration combo + once per ramp, per traffic
+# mode). Each host's own steps stay in their original order (same subshell); only different
+# hosts' work is now concurrent, since each host's state/process is independent of the others.
+PAR_DIR="$(mktemp -d)"
+trap 'rm -rf "${PAR_DIR}"' EXIT
+
+# Calls FN_NAME once per host in VALIDATOR_HOSTS_ARR (as `FN_NAME "$host"`), all in parallel,
+# then waits for all of them. FN_NAME's stdout/stderr land in ${PAR_DIR}/<host>.out; on failure
+# that file is printed. Exits the script if any host's call failed.
+run_per_validator_parallel() {
+  local fn_name="$1" host
+  declare -A pids
   for host in "${VALIDATOR_HOSTS_ARR[@]}"; do
-    echo "  stopping ${host}"
-    ssh_j "${host}" "STATE_DIR=$(state_dir_for "${host}") ${REMOTE_DIR}/scripts/stop_node.sh" || \
-      echo "  warning: stop_node.sh failed or was not deployed on ${host}" >&2
+    ( "${fn_name}" "${host}" > "${PAR_DIR}/${host//\//_}.out" 2>&1 ) &
+    pids[$host]=$!
   done
+  local failed=0
+  for host in "${!pids[@]}"; do
+    if ! wait "${pids[$host]}"; then
+      echo "  FAILED: ${host}" >&2
+      cat "${PAR_DIR}/${host//\//_}.out" >&2
+      failed=1
+    fi
+  done
+  [ "${failed}" -eq 0 ] || exit 1
+}
+
+stop_one_host() { local host="$1"; ssh_j "${host}" "STATE_DIR=$(state_dir_for "${host}") ${REMOTE_DIR}/scripts/stop_node.sh"; }
+
+if [ "${ACTION}" = "stop" ]; then
+  echo "==> Stopping committee on ${NUM_VALIDATORS} host(s) (parallel)"
+  run_per_validator_parallel stop_one_host
   echo "==> Done"
   exit 0
 fi
@@ -184,15 +214,18 @@ host0="${VALIDATOR_HOSTS_ARR[0]}"
 # still using the hostname for every ssh/scp/rsync target (SSH resolves Grid5000 hostnames fine
 # through the jump chain; only the validators' own gRPC/TCP layer cannot).
 declare -A HOST_IP
+resolve_ip_one_host() { local host="$1"; ssh_j "${host}" "hostname -I" | awk '{print $1}'; }
+run_per_validator_parallel resolve_ip_one_host
 for host in "${VALIDATOR_HOSTS_ARR[@]}"; do
-  ip="$(ssh_j "${host}" "hostname -I" | awk '{print $1}')"
+  ip="$(cat "${PAR_DIR}/${host//\//_}.out")"
   [ -n "${ip}" ] || { echo "Could not resolve an IP for ${host}" >&2; exit 1; }
   HOST_IP["${host}"]="${ip}"
   echo "  ${host} -> ${ip}"
 done
 
-echo "==> [1/6] Deploying to ${NUM_VALIDATORS} host(s)"
-for host in "${VALIDATOR_HOSTS_ARR[@]}"; do
+echo "==> [1/6] Deploying to ${NUM_VALIDATORS} host(s) (parallel)"
+deploy_one_host() {
+  local host="$1"
   ssh_j "${host}" "mkdir -p ${REMOTE_DIR}/bin ${REMOTE_DIR}/scripts $(state_dir_for "${host}")"
   if [ "${SKIP_BINARY_DEPLOY}" != "true" ]; then
     rsync_j "${BIN_SRC_DIR}/linera" "${BIN_SRC_DIR}/linera-server" "${BIN_SRC_DIR}/linera-proxy" \
@@ -208,8 +241,10 @@ for host in "${VALIDATOR_HOSTS_ARR[@]}"; do
   # existing keystore ("Keystore already exists"), so every combo after the first one in a
   # sweep would fail here.
   ssh_j "${host}" "rm -rf $(state_dir_for "${host}") && mkdir -p $(state_dir_for "${host}")"
-  echo "  ${host} ready"
-done
+}
+export -f deploy_one_host ssh_j scp_j rsync_j state_dir_for
+run_per_validator_parallel deploy_one_host
+for host in "${VALIDATOR_HOSTS_ARR[@]}"; do echo "  ${host} ready"; done
 
 echo "==> [2/6] Generating committee config locally (${NUM_VALIDATORS} validator(s))"
 rm -f "${STATE_DIR}"/validator_*.toml "${STATE_DIR}"/server_*.json "${STATE_DIR}/committee.json"
@@ -251,40 +286,57 @@ for v in "${!VALIDATOR_HOSTS_ARR[@]}"; do
 done
 echo "  committee: $(jq '.validators | length' "${STATE_DIR}/committee.json") validator(s)"
 
-echo "==> [3/6] Distributing per-validator config"
-for v in "${!VALIDATOR_HOSTS_ARR[@]}"; do
-  host="${VALIDATOR_HOSTS_ARR[$v]}"
+echo "==> [3/6] Distributing per-validator config (parallel)"
+declare -A VALIDATOR_IDX
+for v in "${!VALIDATOR_HOSTS_ARR[@]}"; do VALIDATOR_IDX["${VALIDATOR_HOSTS_ARR[$v]}"]="${v}"; done
+distribute_config_one_host() {
+  local host="$1" v="${VALIDATOR_IDX[$1]}"
   scp_j "${STATE_DIR}/server_${v}.json" "${host}:$(state_dir_for "${host}")/server_0.json"
-done
+}
+export -f distribute_config_one_host
+run_per_validator_parallel distribute_config_one_host
 scp_j "${STATE_DIR}/committee.json" "${host0}:$(state_dir_for "${host0}")/committee.json"
 
-echo "==> [4/6] Starting ${NUM_VALIDATORS} storage-server(s) (one per host, memory backend)"
-for host in "${VALIDATOR_HOSTS_ARR[@]}"; do
+echo "==> [4/6] Starting ${NUM_VALIDATORS} storage-server(s) (one per host, memory backend, parallel)"
+start_storage_one_host() {
+  local host="$1"
   ssh_j "${host}" \
     "STATE_DIR=$(state_dir_for "${host}") NODE_HOST=${HOST_IP[$host]} STORAGE_PORT=${STORAGE_PORT} \
      STORAGE_TOKIO_THREADS=${STORAGE_TOKIO_THREADS} \
      RESERVED_CORES=${RESERVED_CORES} STORAGE_CORES=${STORAGE_CORES} CORES_PER_SHARD=${CORES_PER_SHARD} \
      NUM_SHARDS=${NUM_SHARDS} MODE=storage ${REMOTE_DIR}/scripts/run_single_validator_grid5k.sh"
-done
+}
+export -f start_storage_one_host
+run_per_validator_parallel start_storage_one_host
 
 echo "==> [5/6] Creating genesis config + admin wallet on ${host0}, initializing every validator's storage"
 storage_endpoint() { echo "service:tcp:$1:${STORAGE_PORT}:table_default"; }
+export -f storage_endpoint
 host0_state="$(state_dir_for "${host0}")"
 ssh_j "${host0}" \
   "${REMOTE_DIR}/bin/linera --wallet ${host0_state}/admin_wallet.json --keystore ${host0_state}/admin_keystore.json \
    --storage $(storage_endpoint "${HOST_IP[$host0]}") \
    create-genesis-config --committee ${host0_state}/committee.json --genesis ${host0_state}/genesis.json \
    --initial-funding ${INITIAL_AMOUNT} 1"
-for host in "${VALIDATOR_HOSTS_ARR[@]}"; do
+# All of these target host0 (the only place genesis.json lives) but each initializes a
+# DIFFERENT remote validator's storage endpoint -- independent operations, safe to run
+# concurrently over host0's multiplexed SSH connection (parallel is the whole point here: this
+# loop is NUM_VALIDATORS calls, all funneled through one host, which is exactly where the old
+# sequential version bottlenecked worst).
+init_storage_one_host() {
+  local host="$1"
   ssh_j "${host0}" \
     "${REMOTE_DIR}/bin/linera storage initialize --storage $(storage_endpoint "${HOST_IP[$host]}") --genesis ${host0_state}/genesis.json"
-done
+}
+export -f init_storage_one_host
+run_per_validator_parallel init_storage_one_host
 scp_j "${host0}:${host0_state}/genesis.json" "${host0}:${host0_state}/admin_wallet.json" \
   "${host0}:${host0_state}/admin_keystore.json" "${STATE_DIR}/"
 echo "  genesis + admin wallet relayed to ${STATE_DIR}/"
 
-echo "==> [6/6] Starting shard(s) + proxy (+ manager) on every host"
-for host in "${VALIDATOR_HOSTS_ARR[@]}"; do
+echo "==> [6/6] Starting shard(s) + proxy (+ manager) on every host (parallel)"
+start_workers_one_host() {
+  local host="$1"
   ssh_j "${host}" \
     "STATE_DIR=$(state_dir_for "${host}") NODE_HOST=${HOST_IP[$host]} \
      NUM_SHARDS=${NUM_SHARDS} BASE_SHARDS=${BASE_SHARDS} \
@@ -300,7 +352,9 @@ for host in "${VALIDATOR_HOSTS_ARR[@]}"; do
      MANAGER_MAX_DRAINS_PER_ROUND=${MANAGER_MAX_DRAINS_PER_ROUND} \
      MANAGER_SCALE_DOWN_ROUNDS=${MANAGER_SCALE_DOWN_ROUNDS} MANAGER_COOLDOWN_ROUNDS=${MANAGER_COOLDOWN_ROUNDS} \
      MODE=workers ${REMOTE_DIR}/scripts/run_single_validator_grid5k.sh"
-done
+}
+export -f start_workers_one_host
+run_per_validator_parallel start_workers_one_host
 
 quorum=$(( (NUM_VALIDATORS + (NUM_VALIDATORS + 2) / 3 + 1) / 2 ))
 echo "==> Committee of ${NUM_VALIDATORS} is up (quorum: ${quorum} of ${NUM_VALIDATORS})"

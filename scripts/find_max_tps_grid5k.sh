@@ -226,6 +226,25 @@ VALIDATOR_HOSTS="${VALIDATOR_HOSTS}" SSH_PROXY_JUMP="${SSH_PROXY_JUMP}" SSH_USER
   STORAGE_CORES="${STORAGE_CORES}" STORAGE_TOKIO_THREADS="${STORAGE_TOKIO_THREADS}" ACTION=start \
   "${LOCAL_DIR}/scripts/run_committee_grid5k.sh"
 
+# Used by run_parallel_over_hosts below (per-level CPU-stat reads and results fetches) --
+# confirmed the hard way (2026-10-24, 30v weekend run) that these sequential 30-host loops,
+# run TWICE per ramp level (before/after each measurement), were costing minutes per level and
+# threatening to turn a ~15-level ramp into hours, even with ControlMaster connection reuse
+# (each new SSH session over an existing master connection still costs several seconds through
+# the ProxyJump hop). Parallelizing across hosts (same pattern as apply_wan_latency_grid5k.sh
+# and run_committee_grid5k.sh) cuts each pass to roughly one host's worth of latency.
+PAR_DIR="$(mktemp -d)"
+run_parallel_over_hosts() {
+  local fn_name="$1"; shift
+  local host
+  declare -A pids
+  for host in "$@"; do
+    ( "${fn_name}" "${host}" > "${PAR_DIR}/${host//\//_}.out" 2>&1 ) &
+    pids[$host]=$!
+  done
+  for host in "${!pids[@]}"; do wait "${pids[$host]}" || true; done
+}
+
 cleanup_committee() {
   if [ "${STOP_COMMITTEE_AFTER}" = "true" ]; then
     echo "==> Stopping committee"
@@ -234,6 +253,7 @@ cleanup_committee() {
   else
     echo "==> Leaving committee running (STOP_COMMITTEE_AFTER=false)"
   fi
+  rm -rf "${PAR_DIR}"
 }
 trap cleanup_committee EXIT
 
@@ -397,14 +417,19 @@ measure_level() {
     offset=$((offset + c))
   done
 
-  local validator_stats_before=() validator_stats_after=()
+  local -A validator_stats_before=()
+  run_parallel_over_hosts read_cpu_stat_all "${VALIDATOR_HOSTS_ARR[@]}"
   for host in "${VALIDATOR_HOSTS_ARR[@]}"; do
-    validator_stats_before+=("$(read_cpu_stat_all "${host}")")
+    validator_stats_before["${host}"]="$(cat "${PAR_DIR}/${host//\//_}.out")"
+  done
+  local -a active_client_hosts=()
+  for ((idx = 0; idx < NUM_CLIENT_HOSTS; idx++)); do
+    [ "${host_counts[$idx]}" -gt 0 ] && active_client_hosts+=("${CLIENT_HOSTS_ARR[$idx]}")
   done
   local -A client_stats_before=()
-  for ((idx = 0; idx < NUM_CLIENT_HOSTS; idx++)); do
-    [ "${host_counts[$idx]}" -gt 0 ] || continue
-    client_stats_before["${CLIENT_HOSTS_ARR[$idx]}"]="$(read_cpu_stat_all "${CLIENT_HOSTS_ARR[$idx]}")"
+  run_parallel_over_hosts read_cpu_stat_all "${active_client_hosts[@]}"
+  for ch in "${active_client_hosts[@]}"; do
+    client_stats_before["${ch}"]="$(cat "${PAR_DIR}/${ch//\//_}.out")"
   done
 
   local pids=()
@@ -437,24 +462,29 @@ measure_level() {
   done
   [ "${fail}" -eq 0 ] || echo "  warning: at least one client host's run_lite_benchmark_parallel.sh exited non-zero for level ${n} (attempt ${attempt})" >&2
 
-  local i=0
+  run_parallel_over_hosts read_cpu_stat_all "${VALIDATOR_HOSTS_ARR[@]}"
+  local -A validator_stats_after=()
+  for host in "${VALIDATOR_HOSTS_ARR[@]}"; do
+    validator_stats_after["${host}"]="$(cat "${PAR_DIR}/${host//\//_}.out")"
+  done
+  run_parallel_over_hosts read_cpu_stat_all "${active_client_hosts[@]}"
+  local -A client_stats_after=()
+  for ch in "${active_client_hosts[@]}"; do
+    client_stats_after["${ch}"]="$(cat "${PAR_DIR}/${ch//\//_}.out")"
+  done
+
   local reserved_vals="" storage_vals="" shard_vals=""
   for host in "${VALIDATOR_HOSTS_ARR[@]}"; do
-    local after
-    after="$(read_cpu_stat_all "${host}")"
-    reserved_vals="${reserved_vals} $(cpu_range_utilization_pct "${validator_stats_before[$i]}" "${after}" 0 $((RESERVED_CORES - 1)))"
+    local after="${validator_stats_after[${host}]}"
+    reserved_vals="${reserved_vals} $(cpu_range_utilization_pct "${validator_stats_before[${host}]}" "${after}" 0 $((RESERVED_CORES - 1)))"
     if [ "${STORAGE_CORES}" -gt 0 ]; then
-      storage_vals="${storage_vals} $(cpu_range_utilization_pct "${validator_stats_before[$i]}" "${after}" "${RESERVED_CORES}" $((shard_cores_start - 1)))"
+      storage_vals="${storage_vals} $(cpu_range_utilization_pct "${validator_stats_before[${host}]}" "${after}" "${RESERVED_CORES}" $((shard_cores_start - 1)))"
     fi
-    shard_vals="${shard_vals} $(cpu_range_utilization_pct "${validator_stats_before[$i]}" "${after}" "${shard_cores_start}" "${shard_cores_end}")"
-    i=$((i + 1))
+    shard_vals="${shard_vals} $(cpu_range_utilization_pct "${validator_stats_before[${host}]}" "${after}" "${shard_cores_start}" "${shard_cores_end}")"
   done
   local client_vals=""
-  for ((idx = 0; idx < NUM_CLIENT_HOSTS; idx++)); do
-    [ "${host_counts[$idx]}" -gt 0 ] || continue
-    local ch="${CLIENT_HOSTS_ARR[$idx]}" after
-    after="$(read_cpu_stat_all "${ch}")"
-    client_vals="${client_vals} $(cpu_range_utilization_pct "${client_stats_before[${ch}]}" "${after}" 0 9999)"
+  for ch in "${active_client_hosts[@]}"; do
+    client_vals="${client_vals} $(cpu_range_utilization_pct "${client_stats_before[${ch}]}" "${client_stats_after[${ch}]}" 0 9999)"
   done
   local validator_reserved_summary validator_storage_summary validator_shard_summary client_cpu_pct
   validator_reserved_summary="$(min_avg_max "${reserved_vals}")"
@@ -470,23 +500,26 @@ measure_level() {
   else
     level_dir="$(mktemp -d)"
   fi
+  # Fetch + clean up every client host's results in parallel (same rationale as the CPU-stat
+  # reads above) -- distinct remote dirs per host (EXPERIMENT_NAME=${experiment_name}_h${idx}),
+  # so concurrent rsyncs into the shared local level_dir are safe (each writes disjoint subdirs).
+  local fetch_pids=()
   for ((idx = 0; idx < NUM_CLIENT_HOSTS; idx++)); do
     [ "${host_counts[$idx]}" -gt 0 ] || continue
     local ch="${CLIENT_HOSTS_ARR[$idx]}"
-    # Per-host remote dir (EXPERIMENT_NAME=${experiment_name}_h${idx} above): Grid5000 shares
-    # $HOME via NFS across every host at a site, so a *shared* remote path here would let one
-    # host's cleanup (rm -rf below) delete a directory another host is still rsync-fetching
-    # from -- confirmed the hard way as "Stale file handle" errors on 3 of 4 client hosts
-    # every level once NUM_CLIENT_HOSTS>1 was exercised for real.
     local remote_level_dir="${REMOTE_DIR}/results/lite_benchmark/${experiment_name}_h${idx}"
-    rsync_j --exclude='wallet.json' --exclude='keystore.json' \
-      "${ch}:${remote_level_dir}/" "${level_dir}/" || \
-      echo "  warning: failed to fetch level ${n} (attempt ${attempt}) from ${ch}" >&2
-    if [ "${CLEAN_LEVEL_ON_CLIENT}" = "true" ]; then
-      ssh_j "${ch}" "rm -rf ${remote_level_dir}" || \
-        echo "  warning: failed to clean up ${remote_level_dir} on ${ch}" >&2
-    fi
+    (
+      rsync_j --exclude='wallet.json' --exclude='keystore.json' \
+        "${ch}:${remote_level_dir}/" "${level_dir}/" || \
+        echo "  warning: failed to fetch level ${n} (attempt ${attempt}) from ${ch}" >&2
+      if [ "${CLEAN_LEVEL_ON_CLIENT}" = "true" ]; then
+        ssh_j "${ch}" "rm -rf ${remote_level_dir}" || \
+          echo "  warning: failed to clean up ${remote_level_dir} on ${ch}" >&2
+      fi
+    ) &
+    fetch_pids+=("$!")
   done
+  for pid in "${fetch_pids[@]}"; do wait "${pid}" || true; done
 
   local durations_file
   durations_file="$(mktemp)"

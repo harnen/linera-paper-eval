@@ -170,7 +170,7 @@ LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 SUMMARY_CSV="${SUMMARY_CSV_PATH:-$(mktemp -d)/max_tps_summary.csv}"
 mkdir -p "$(dirname "${SUMMARY_CSV}")"
-echo "num_clients,requested_bps,committed,failed,achieved_bps,achieved_tps,p25_ms,p50_ms,p95_ms,validator_reserved_cpu_pct_min_avg_max,validator_storage_cpu_pct_min_avg_max,validator_shard_cpu_pct_min_avg_max,client_cpu_pct_min_avg_max,step,attempt,verdict" > "${SUMMARY_CSV}"
+echo "num_clients,requested_bps,committed,failed,achieved_bps,achieved_tps,p25_ms,p50_ms,p95_ms,validator_reserved_cpu_pct_min_avg_max,validator_storage_cpu_pct_min_avg_max,validator_shard_cpu_pct_min_avg_max,client_cpu_pct_min_avg_max,step,attempt,verdict,client_net_mbps_min_avg_max" > "${SUMMARY_CSV}"
 
 # See run_committee_grid5k.sh for why this is -o User=... rather than user@host (hosts double
 # as NODE_HOST) and why ControlMaster/ControlPersist matter (avoids re-tripping the bastion's
@@ -341,6 +341,32 @@ read_cpu_stat_all() {
   ssh_j -o ConnectTimeout=5 "$1" "grep '^cpu' /proc/stat" 2>/dev/null
 }
 
+# Two lines: rx_bytes then tx_bytes, from the host's default-route interface (same resolution
+# as apply_wan_latency_grid5k.sh's HOST_IFACE, re-derived here rather than threaded through
+# since this script doesn't otherwise know about that one's per-host interface map). Empty
+# output (interface resolution or the stat reads failed) flows into net_mbps's own "NaN" guard
+# below, same robustness contract as read_cpu_stat_all/cpu_range_utilization_pct.
+read_net_bytes_all() {
+  ssh_j -o ConnectTimeout=5 "$1" \
+    "iface=\$(ip route | awk '/default/{print \$5; exit}'); cat /sys/class/net/\${iface}/statistics/rx_bytes /sys/class/net/\${iface}/statistics/tx_bytes" \
+    2>/dev/null
+}
+
+# Combined (rx+tx) throughput in Mbps over the `secs`-second window between two
+# read_net_bytes_all samples.
+net_mbps() {
+  awk -v b="$1" -v a="$2" -v secs="$3" '
+    BEGIN {
+      if (b == "" || a == "" || secs <= 0) { print "NaN"; exit }
+      split(b, bl, "\n"); split(a, al, "\n")
+      rx_b = bl[1] + 0; tx_b = bl[2] + 0; rx_a = al[1] + 0; tx_a = al[2] + 0
+      delta_bytes = (rx_a - rx_b) + (tx_a - tx_b)
+      if (delta_bytes < 0) { print "NaN"; exit }  # counter reset/wrap -- do not report a bogus negative rate
+      printf "%.1f", delta_bytes * 8 / 1000000 / secs
+    }
+  '
+}
+
 cpu_range_utilization_pct() {
   awk -v b="$1" -v a="$2" -v s="$3" -v e="$4" '
     function accumulate(text, tot, idl,    nlines, lines, i, n, fields, nf, core, j) {
@@ -392,9 +418,9 @@ shard_cores_end=$((shard_cores_start + NUM_SHARDS * CORES_PER_SHARD - 1))
 
 echo "==> [5/6] Ramping clients (traffic-mode=${TRAFFIC_MODE}, ${RUNTIME_SECONDS}s per level)"
 echo "    step schedule: ${CLIENT_STEP_SCHEDULE} (coarse -> fine), ceiling ${MAX_CLIENTS} clients"
-printf "%-8s %-14s %-10s %-8s %-14s %-14s %-10s %-10s %-10s %-22s %-22s %-19s %-19s\n" \
+printf "%-8s %-14s %-10s %-8s %-14s %-14s %-10s %-10s %-10s %-22s %-22s %-19s %-19s %-19s\n" \
   "clients" "requested_bps" "committed" "failed" "achieved_bps" "achieved_tps" \
-  "p25_ms" "p50_ms" "p95_ms" "validator_rsvd%(min/avg/max)" "validator_storage%(m/a/M)" "validator_shard%(m/a/M)" "client_cpu%(m/a/M)"
+  "p25_ms" "p50_ms" "p95_ms" "validator_rsvd%(min/avg/max)" "validator_storage%(m/a/M)" "validator_shard%(m/a/M)" "client_cpu%(m/a/M)" "client_net_mbps(m/a/M)"
 
 declare -A LEVEL_LINE
 declare -A LEVEL_VERDICT
@@ -430,6 +456,11 @@ measure_level() {
   run_parallel_over_hosts read_cpu_stat_all "${active_client_hosts[@]}"
   for ch in "${active_client_hosts[@]}"; do
     client_stats_before["${ch}"]="$(cat "${PAR_DIR}/${ch//\//_}.out")"
+  done
+  local -A client_net_before=()
+  run_parallel_over_hosts read_net_bytes_all "${active_client_hosts[@]}"
+  for ch in "${active_client_hosts[@]}"; do
+    client_net_before["${ch}"]="$(cat "${PAR_DIR}/${ch//\//_}.out")"
   done
 
   local pids=()
@@ -472,6 +503,11 @@ measure_level() {
   for ch in "${active_client_hosts[@]}"; do
     client_stats_after["${ch}"]="$(cat "${PAR_DIR}/${ch//\//_}.out")"
   done
+  run_parallel_over_hosts read_net_bytes_all "${active_client_hosts[@]}"
+  local -A client_net_after=()
+  for ch in "${active_client_hosts[@]}"; do
+    client_net_after["${ch}"]="$(cat "${PAR_DIR}/${ch//\//_}.out")"
+  done
 
   local reserved_vals="" storage_vals="" shard_vals=""
   for host in "${VALIDATOR_HOSTS_ARR[@]}"; do
@@ -482,15 +518,17 @@ measure_level() {
     fi
     shard_vals="${shard_vals} $(cpu_range_utilization_pct "${validator_stats_before[${host}]}" "${after}" "${shard_cores_start}" "${shard_cores_end}")"
   done
-  local client_vals=""
+  local client_vals="" client_net_vals=""
   for ch in "${active_client_hosts[@]}"; do
     client_vals="${client_vals} $(cpu_range_utilization_pct "${client_stats_before[${ch}]}" "${client_stats_after[${ch}]}" 0 9999)"
+    client_net_vals="${client_net_vals} $(net_mbps "${client_net_before[${ch}]}" "${client_net_after[${ch}]}" "${RUNTIME_SECONDS}")"
   done
-  local validator_reserved_summary validator_storage_summary validator_shard_summary client_cpu_pct
+  local validator_reserved_summary validator_storage_summary validator_shard_summary client_cpu_pct client_net_mbps
   validator_reserved_summary="$(min_avg_max "${reserved_vals}")"
   validator_storage_summary="$([ "${STORAGE_CORES}" -gt 0 ] && min_avg_max "${storage_vals}" || echo "n/a")"
   validator_shard_summary="$(min_avg_max "${shard_vals}")"
   client_cpu_pct="$(min_avg_max "${client_vals}")"
+  client_net_mbps="$(min_avg_max "${client_net_vals}")"
 
   local level_dir keep_level_dir=false
   if [ -n "${CLIENT_ARCHIVE_DIR}" ]; then
@@ -554,9 +592,9 @@ measure_level() {
   achieved_tps="$(awk -v c="${total_tx}" -v t="${RUNTIME_SECONDS}" 'BEGIN{printf "%.1f", c/t}')"
 
   local row
-  row="$(printf "%-8s %-14s %-10s %-8s %-14s %-14s %-10s %-10s %-10s %-22s %-22s %-19s %-19s" \
+  row="$(printf "%-8s %-14s %-10s %-8s %-14s %-14s %-10s %-10s %-10s %-22s %-22s %-19s %-19s %-19s" \
     "${n}" "${requested_bps}" "${committed}" "${failed}" "${achieved_bps}" "${achieved_tps}" \
-    "${p25_ms}" "${p50_ms}" "${p95_ms}" "${validator_reserved_summary}" "${validator_storage_summary}" "${validator_shard_summary}" "${client_cpu_pct}")"
+    "${p25_ms}" "${p50_ms}" "${p95_ms}" "${validator_reserved_summary}" "${validator_storage_summary}" "${validator_shard_summary}" "${client_cpu_pct}" "${client_net_mbps}")"
 
   LEVEL_STOP_REASON=""
   if [ "${fail}" -ne 0 ] && [ "${committed}" -eq 0 ] && [ "${failed}" -eq 0 ]; then
@@ -578,7 +616,7 @@ measure_level() {
   local verdict="good"
   [ -n "${LEVEL_STOP_REASON}" ] && verdict="bad"
   printf "%s %-6s %s\n" "${row}" "${verdict}" "${LEVEL_STOP_REASON}"
-  echo "${n},${requested_bps},${committed},${failed},${achieved_bps},${achieved_tps},${p25_ms},${p50_ms},${p95_ms},${validator_reserved_summary},${validator_storage_summary},${validator_shard_summary},${client_cpu_pct},${step},${attempt},${verdict}" >> "${SUMMARY_CSV}"
+  echo "${n},${requested_bps},${committed},${failed},${achieved_bps},${achieved_tps},${p25_ms},${p50_ms},${p95_ms},${validator_reserved_summary},${validator_storage_summary},${validator_shard_summary},${client_cpu_pct},${step},${attempt},${verdict},${client_net_mbps}" >> "${SUMMARY_CSV}"
   MEASURED_ROW="${row}"
 
   rm -f "${durations_file}"

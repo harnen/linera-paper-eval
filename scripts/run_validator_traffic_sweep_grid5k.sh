@@ -98,7 +98,13 @@ mkdir -p "${OUT_ROOT}"
 pick_best_combo() {
   # Reads a profile_core_split_grid5k.sh summary.csv on stdin, prints
   # "reserved storage cps shards" for the row with the highest achieved_bps among rows whose
-  # status is exactly "ok" (skips "skipped: ..." / "failed: ..." rows).
+  # status is "ok" (skips "skipped: ..." / "failed: ..." rows). A combo with a handful of
+  # transient failures still reads "ok; N failed block(s)" (see profile_core_split_grid5k.sh),
+  # not the bare string "ok" -- notably with --quorum-only, where a few expected transient
+  # failures under load are normal, not a sign the combo itself is broken. An exact-match
+  # comparison here rejected every otherwise-healthy combo and starved the full ramp entirely
+  # (confirmed 2026-10-28: all 5 quorum-only combos read "ok; N failed block(s)" with achieved_bps
+  # close to the target and <0.2% failure rate, yet "no combo succeeded" fired every time).
   python3 -c '
 import csv, sys
 best = None
@@ -107,7 +113,7 @@ for row in csv.reader(sys.stdin):
     if len(row) < 15 or row[0] == "reserved_cores":
         continue
     status = row[14]
-    if status != "ok":
+    if not (status == "ok" or status.startswith("ok;")):
         continue
     try:
         bps = float(row[7])

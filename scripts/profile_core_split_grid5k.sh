@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Profiles how a validator's CPU budget should be split between the proxy (RESERVED_CORES),
-# the storage-server (STORAGE_CORES), and the shard workers (NUM_SHARDS * CORES_PER_SHARD) --
-# a lighter sibling of find_max_tps_grid5k.sh: no ramp-to-failure search, just one fixed,
-# moderate load level per combo, since the point is comparing CPU/latency *across splits* at
-# constant offered load, not finding each split's own ceiling.
+# Profiles how a validator's CPU budget should be split between cores held out for the proxy +
+# storage-server (RESERVED_CORES, STORAGE_CORES) and the shard workers (NUM_SHARDS *
+# CORES_PER_SHARD) -- a lighter sibling of find_max_tps_grid5k.sh: no ramp-to-failure search,
+# just one fixed, moderate load level per combo, since the point is comparing CPU/latency
+# *across splits* at constant offered load, not finding each split's own ceiling.
+#
+# Note: the proxy and storage-server are never actually pinned to RESERVED_CORES/STORAGE_CORES
+# (run_validators.sh always leaves them unpinned, free to float onto any core including idle
+# shard cores -- see project_weekend_byzantine_experiments memory). RESERVED_CORES/STORAGE_CORES
+# here only control how many cores are *held out of the shard budget*, i.e. how many shards
+# NUM_SHARDS derives to below -- not an isolation guarantee for the proxy/storage-server.
 #
 # Every combo in COMBOS uses the same total per-validator core budget (TOTAL_CORES) -- only how
 # that budget is divided changes -- so the comparison is apples to apples.

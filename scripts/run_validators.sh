@@ -41,15 +41,15 @@ set -euo pipefail
 #                      that varies across a validator-count sweep, and a slowdown cannot be
 #                      blamed on validators having been squeezed onto fewer cores each.
 #                      Errors out if the total exceeds `nproc`.
-#   RESERVED_CORES    (default 0 = proxies and storage-servers left unpinned, free to float
-#                      across all cores). When > 0, all proxies are pinned to cores
-#                      0..RESERVED_CORES-1 and the shard blocks start after them.
-#   STORAGE_CORES     (default 0 = storage-servers share the proxies' range, i.e. also
-#                      unpinned when RESERVED_CORES=0). When > 0, every storage-server is
-#                      pinned to RESERVED_CORES..RESERVED_CORES+STORAGE_CORES-1 and the shard
-#                      blocks start after that instead -- all shards funnel their reads and
-#                      writes through storage, so it can be worth its own cores rather than
-#                      sharing the proxies' small reservation.
+#   RESERVED_CORES    (default 0) proxies and storage-servers are ALWAYS left unpinned (free
+#                      to float across every core, including idle shard cores) regardless of
+#                      this value -- see the no-taskset-for-proxy/storage rationale where
+#                      reserved_taskset/storage_taskset are computed, below. This only shifts
+#                      where the shard blocks start (shard_core_offset = RESERVED_CORES +
+#                      STORAGE_CORES), i.e. it holds that many cores out of the shard budget
+#                      rather than confining proxies to them.
+#   STORAGE_CORES     (default 0) same as RESERVED_CORES above -- storage-servers are always
+#                      unpinned; this only adds to shard_core_offset.
 #   SHARD_TOKIO_THREADS (default 0 = CORES_PER_SHARD)
 #   STORAGE_TOKIO_THREADS (default 0 = storage-server's own default)
 #   BASE_SHARDS       (default NUM_SHARDS) how many of each validator's NUM_SHARDS configured
@@ -139,6 +139,16 @@ done
 [ "${NUM_VALIDATORS}" -ge 1 ] || { echo "NUM_VALIDATORS must be >= 1" >&2; exit 1; }
 [ "${BASE_SHARDS}" -le "${NUM_SHARDS}" ] || { echo "BASE_SHARDS (${BASE_SHARDS}) must be <= NUM_SHARDS (${NUM_SHARDS})" >&2; exit 1; }
 
+# proxies and storage-servers are deliberately left unpinned (reserved_taskset/storage_taskset
+# stay empty -- no `taskset -c` at all, regardless of RESERVED_CORES/STORAGE_CORES) so they
+# inherit the full machine's default affinity and the kernel scheduler can spread/grow them onto
+# however many cores they actually need, including idle shard-pinned cores, instead of being
+# hard-walled into a small guessed slice. Found 2026-10-27/28 (see
+# project_weekend_byzantine_experiments memory): a RESERVED_CORES=2 pin left those 2 cores
+# pegged at 86-97% busy (mostly `user` time -- the proxy's own routing/signing work, not
+# softirq) while every shard core sat at only 15-25% busy -- plenty of idle shard-core capacity
+# sitting right there unused. RESERVED_CORES/STORAGE_CORES still matter here only as a budget
+# subtracted from shard placement (shard_core_offset below), not as an affinity mask.
 shard_core_offset=$((RESERVED_CORES + STORAGE_CORES))
 reserved_taskset=()
 storage_taskset=()
@@ -149,15 +159,6 @@ if [ "${CORES_PER_SHARD}" -gt 0 ]; then
   if [ "${needed_cores}" -gt "${available_cores}" ]; then
     echo "RESERVED_CORES (${RESERVED_CORES}) + STORAGE_CORES (${STORAGE_CORES}) + NUM_VALIDATORS*NUM_SHARDS*CORES_PER_SHARD (${NUM_VALIDATORS}*${NUM_SHARDS}*${CORES_PER_SHARD}=$((NUM_VALIDATORS * NUM_SHARDS * CORES_PER_SHARD))) = ${needed_cores} exceeds this machine's ${available_cores} cores" >&2
     exit 1
-  fi
-  if [ "${RESERVED_CORES}" -gt 0 ]; then
-    reserved_taskset=(taskset -c "0-$((RESERVED_CORES - 1))")
-  fi
-  if [ "${STORAGE_CORES}" -gt 0 ]; then
-    storage_taskset=(taskset -c "${RESERVED_CORES}-$((RESERVED_CORES + STORAGE_CORES - 1))")
-  else
-    # Storage shares the proxies' reserved range (unpinned when RESERVED_CORES=0).
-    storage_taskset=("${reserved_taskset[@]}")
   fi
 fi
 

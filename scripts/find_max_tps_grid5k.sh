@@ -47,7 +47,12 @@ set -euo pipefail
 #   LINERA_SRC             (default ~/work/linera/linera-protocol)
 #   NUM_SHARDS             (default 19) shards *per validator*
 #   CORES_PER_SHARD        (default 2) 0 disables CPU pinning entirely
-#   RESERVED_CORES         (default 2) reserved for storage-server + proxy on each validator host
+#   RESERVED_CORES         (default 2) cores held out of the shard budget on each validator
+#                          host for storage-server + proxy -- NOT an affinity mask: those two
+#                          processes always run unpinned (see run_validators.sh), so this only
+#                          shifts where shards start, leaving storage-server/proxy free to float
+#                          across any core including idle shard ones. See
+#                          project_weekend_byzantine_experiments memory for why.
 #   STORAGE_TOKIO_THREADS  (default 0 = storage-server's own default)
 #   CHAINS_PER_CLIENT, BPS_PER_CLIENT, TRANSACTIONS_PER_BLOCK[_FILE|_SCALE], TRAFFIC_MODE,
 #   LIGHT_CERTIFICATES, QUORUM_ONLY (see run_lite_benchmark_parallel.sh), CLIENT_MODE,

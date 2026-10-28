@@ -97,6 +97,17 @@ ensure_port_free() {
 
 storage_endpoint() { echo "service:tcp:${NODE_HOST}:${STORAGE_PORT}:table_default"; }
 
+# proxy and storage-server are deliberately left unpinned (reserved_taskset/storage_taskset stay
+# empty -- no `taskset -c` at all) so they inherit the full machine's default affinity and the
+# kernel scheduler can spread/grow them onto however many cores they actually need, including
+# idle shard-pinned cores, instead of being hard-walled into a small guessed RESERVED_CORES/
+# STORAGE_CORES slice. Found 2026-10-27/28 (see project_weekend_byzantine_experiments memory):
+# a RESERVED_CORES=2 pin left those 2 cores pegged at 86-97% busy (mostly `user` time, i.e. the
+# proxy's own routing/signing work, not softirq) while every shard core sat at only 15-25% busy
+# -- plenty of idle shard-core capacity sitting right there unused. RESERVED_CORES/STORAGE_CORES
+# still matter here only as a budget subtracted from shard placement (shard_core_offset below),
+# so shards don't start on core 0 and don't have to coexist with proxy/storage on the very first
+# few cores -- not as an affinity mask that confines proxy/storage.
 shard_core_offset=$((RESERVED_CORES + STORAGE_CORES))
 reserved_taskset=()
 storage_taskset=()
@@ -107,14 +118,6 @@ if [ "${CORES_PER_SHARD}" -gt 0 ]; then
   if [ "${needed_cores}" -gt "${available_cores}" ]; then
     echo "RESERVED_CORES+STORAGE_CORES+NUM_SHARDS*CORES_PER_SHARD=${needed_cores} exceeds this machine's ${available_cores} cores" >&2
     exit 1
-  fi
-  if [ "${RESERVED_CORES}" -gt 0 ]; then
-    reserved_taskset=(taskset -c "0-$((RESERVED_CORES - 1))")
-  fi
-  if [ "${STORAGE_CORES}" -gt 0 ]; then
-    storage_taskset=(taskset -c "${RESERVED_CORES}-$((RESERVED_CORES + STORAGE_CORES - 1))")
-  else
-    storage_taskset=("${reserved_taskset[@]}")
   fi
 fi
 

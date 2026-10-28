@@ -58,7 +58,14 @@ set -euo pipefail
 #   LIGHT_CERTIFICATES, QUORUM_ONLY (see run_lite_benchmark_parallel.sh), CLIENT_MODE,
 #   CLIENT_TOKIO_THREADS, SIMULATED_LATENCY_MS,
 #   SKIP_MESSAGE_PROCESSING, RUNTIME_SECONDS, MIN_ACHIEVED_FRACTION,
-#   START_CLIENTS,
+#   START_CLIENTS          (default 20, was 1) 2026-10-28: the first few doubling levels below
+#                          ~20 clients (1, 2, 4, 8, 16) never carry any signal -- the committee
+#                          is nowhere near stressed, achieved_bps tracks requested_bps almost
+#                          exactly, and each level still costs its own chain-provisioning +
+#                          process-spawn/teardown overhead for nothing. 20 clients is where
+#                          requested_bps first reaches >= 1000 at the default BPS_PER_CLIENT=50
+#                          -- i.e. still very far from any real ceiling, just skipping the
+#                          genuinely uninformative tail.
 #   CLIENT_STEP, CLIENT_STEP_SCHEDULE, CONFIRM_STOP_RETRIES, SUMMARY_CSV_PATH,
 #   CLIENT_ARCHIVE_DIR, CLEAN_LEVEL_ON_CLIENT
 #   REPEATS                (default 1) once a level is confirmed good, measure it REPEATS-1
@@ -154,7 +161,7 @@ MAX_CLIENTS="${MAX_CLIENTS:-4000}"
 RUNTIME_SECONDS="${RUNTIME_SECONDS:-20}"
 MIN_ACHIEVED_FRACTION="${MIN_ACHIEVED_FRACTION:-0.8}"
 FAILURES_ONLY="${FAILURES_ONLY:-true}"
-START_CLIENTS="${START_CLIENTS:-1}"
+START_CLIENTS="${START_CLIENTS:-20}"
 CLIENT_STEP="${CLIENT_STEP:-1}"
 # Doubling phase to find the rough neighborhood fast, then a single 1000-client additive phase
 # to bracket it -- 1000 clients (50000 bps) is as fine a resolution as this project cares about,

@@ -462,6 +462,15 @@ measure_level() {
   for ch in "${active_client_hosts[@]}"; do
     client_net_before["${ch}"]="$(cat "${PAR_DIR}/${ch//\//_}.out")"
   done
+  # Real wall-clock start of the before/after net-byte bracket, NOT RUNTIME_SECONDS -- at high
+  # client counts, spawning/tearing down thousands of one-process-per-client OS processes (see
+  # run_lite_benchmark_parallel.sh's header) can take far longer than the nominal RUNTIME_SECONDS
+  # benchmark window itself, so dividing the byte delta by RUNTIME_SECONDS silently overstated
+  # client_net_mbps by the same factor (confirmed empirically via Grid5000 Kwollect ground-truth
+  # counters on the same host/window: ~18.6x overstatement at 19384 clients, 2026-10-27/28
+  # weekend run -- see project_weekend_byzantine_experiments memory).
+  local net_before_epoch
+  net_before_epoch="$(date +%s.%N)"
 
   local pids=()
   for ((idx = 0; idx < NUM_CLIENT_HOSTS; idx++)); do
@@ -508,6 +517,9 @@ measure_level() {
   for ch in "${active_client_hosts[@]}"; do
     client_net_after["${ch}"]="$(cat "${PAR_DIR}/${ch//\//_}.out")"
   done
+  local net_after_epoch net_elapsed_secs
+  net_after_epoch="$(date +%s.%N)"
+  net_elapsed_secs="$(awk -v b="${net_before_epoch}" -v a="${net_after_epoch}" 'BEGIN{d=a-b; print (d>0)?d:1}')"
 
   local reserved_vals="" storage_vals="" shard_vals=""
   for host in "${VALIDATOR_HOSTS_ARR[@]}"; do
@@ -521,7 +533,7 @@ measure_level() {
   local client_vals="" client_net_vals=""
   for ch in "${active_client_hosts[@]}"; do
     client_vals="${client_vals} $(cpu_range_utilization_pct "${client_stats_before[${ch}]}" "${client_stats_after[${ch}]}" 0 9999)"
-    client_net_vals="${client_net_vals} $(net_mbps "${client_net_before[${ch}]}" "${client_net_after[${ch}]}" "${RUNTIME_SECONDS}")"
+    client_net_vals="${client_net_vals} $(net_mbps "${client_net_before[${ch}]}" "${client_net_after[${ch}]}" "${net_elapsed_secs}")"
   done
   local validator_reserved_summary validator_storage_summary validator_shard_summary client_cpu_pct client_net_mbps
   validator_reserved_summary="$(min_avg_max "${reserved_vals}")"

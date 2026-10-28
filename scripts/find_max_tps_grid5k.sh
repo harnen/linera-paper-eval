@@ -48,11 +48,16 @@ set -euo pipefail
 #   NUM_SHARDS             (default 19) shards *per validator*
 #   CORES_PER_SHARD        (default 2) 0 disables CPU pinning entirely
 #   RESERVED_CORES         (default 2) cores held out of the shard budget on each validator
-#                          host for storage-server + proxy -- NOT an affinity mask: those two
-#                          processes always run unpinned (see run_validators.sh), so this only
-#                          shifts where shards start, leaving storage-server/proxy free to float
-#                          across any core including idle shard ones. See
-#                          project_weekend_byzantine_experiments memory for why.
+#                          host for storage-server + proxy -- NOT an affinity mask by default:
+#                          those two processes run unpinned unless PIN_RESERVED_STORAGE=true
+#                          (see run_validators.sh), so this only shifts where shards start,
+#                          leaving storage-server/proxy free to float across any core including
+#                          idle shard ones. See project_weekend_byzantine_experiments memory.
+#   PIN_RESERVED_STORAGE   (default false) set true to restore the old taskset-pinned
+#                          storage-server/proxy behavior (confines them to RESERVED_CORES/
+#                          STORAGE_CORES) for comparison -- empirically performs better at
+#                          extreme client counts (8192+) even though unpinned wins in the
+#                          128-2048 range. See project_weekend_byzantine_experiments memory.
 #   STORAGE_TOKIO_THREADS  (default 0 = storage-server's own default)
 #   CHAINS_PER_CLIENT, BPS_PER_CLIENT, TRANSACTIONS_PER_BLOCK[_FILE|_SCALE], TRAFFIC_MODE,
 #   LIGHT_CERTIFICATES, QUORUM_ONLY (see run_lite_benchmark_parallel.sh), CLIENT_MODE,
@@ -129,6 +134,7 @@ LINERA_SRC="${LINERA_SRC:-$HOME/work/linera/linera-protocol}"
 NUM_SHARDS="${NUM_SHARDS:-19}"
 CORES_PER_SHARD="${CORES_PER_SHARD:-2}"
 RESERVED_CORES="${RESERVED_CORES:-2}"
+PIN_RESERVED_STORAGE="${PIN_RESERVED_STORAGE:-false}"
 STORAGE_CORES="${STORAGE_CORES:-0}"
 STORAGE_TOKIO_THREADS="${STORAGE_TOKIO_THREADS:-0}"
 CHAINS_PER_CLIENT="${CHAINS_PER_CLIENT:-5}"
@@ -235,7 +241,8 @@ VALIDATOR_HOSTS="${VALIDATOR_HOSTS}" SSH_PROXY_JUMP="${SSH_PROXY_JUMP}" SSH_USER
   BIN_SRC_DIR="${bin_src}" STATE_DIR="${committee_state_dir}" \
   SKIP_BINARY_DEPLOY="${SKIP_BINARY_DEPLOY}" \
   NUM_SHARDS="${NUM_SHARDS}" CORES_PER_SHARD="${CORES_PER_SHARD}" RESERVED_CORES="${RESERVED_CORES}" \
-  STORAGE_CORES="${STORAGE_CORES}" STORAGE_TOKIO_THREADS="${STORAGE_TOKIO_THREADS}" ACTION=start \
+  STORAGE_CORES="${STORAGE_CORES}" STORAGE_TOKIO_THREADS="${STORAGE_TOKIO_THREADS}" \
+  PIN_RESERVED_STORAGE="${PIN_RESERVED_STORAGE}" ACTION=start \
   "${LOCAL_DIR}/scripts/run_committee_grid5k.sh"
 
 # Used by run_parallel_over_hosts below (per-level CPU-stat reads and results fetches) --

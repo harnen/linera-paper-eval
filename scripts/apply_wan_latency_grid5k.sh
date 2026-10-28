@@ -49,6 +49,20 @@ CLIENT_HOSTS="${CLIENT_HOSTS:?set CLIENT_HOSTS to a space-separated list of clie
 SSH_PROXY_JUMP="${SSH_PROXY_JUMP:-}"
 SSH_USER="${SSH_USER:-}"
 ACTION="${ACTION:-apply}"
+# netem's own packet-queue limit, applied per (client,validator)/(validator,validator) classid.
+# Explicit because netem's kernel default is only 1000 packets -- found 2026-10-28 (see
+# project_weekend_byzantine_experiments memory) that at high concurrent-client counts every
+# client host's traffic toward a given validator funnels through ONE shared netem queue
+# (filtered by destination IP only, not per-connection), so thousands of client processes all
+# talking to the same 30 validators can overflow that 1000-packet limit, causing netem to DROP
+# packets -- which triggers TCP retransmission timeouts whose exponential backoff (1s, 2s, 4s,
+# 8s, 16s, 32s...) matches the previously-unexplained tail latency almost exactly (p95 15-90s),
+# while leaving validator CPU looking idle (the bottleneck is packets stuck behind a drop-prone
+# queue/TCP timers, not real processing). Confirmed via a live A/B: clearing tc entirely at
+# 19384 clients raised reserved-core CPU from ~55% to ~88% (genuinely near-saturated) and cut
+# p95 latency from 53.6s to 15.8s -- NETEM_QUEUE_LIMIT restores the simulated delay without
+# that queue-overflow artifact.
+NETEM_QUEUE_LIMIT="${NETEM_QUEUE_LIMIT:-100000}"
 
 read -ra VALIDATOR_HOSTS_ARR <<< "${VALIDATOR_HOSTS}"
 read -ra CLIENT_HOSTS_ARR <<< "${CLIENT_HOSTS}"
@@ -181,7 +195,7 @@ for ch in "${CLIENT_HOSTS_ARR[@]}"; do
     # Client's egress toward this validator.
     HOST_CMD[$ch]="${HOST_CMD[$ch]} && \
       sudo-g5k tc class add dev ${HOST_IFACE[$ch]} parent 1: classid 1:${classid} htb rate 10gbit && \
-      sudo-g5k tc qdisc add dev ${HOST_IFACE[$ch]} parent 1:${classid} handle ${classid}: netem delay ${half}ms && \
+      sudo-g5k tc qdisc add dev ${HOST_IFACE[$ch]} parent 1:${classid} handle ${classid}: netem delay ${half}ms limit ${NETEM_QUEUE_LIMIT} && \
       sudo-g5k tc filter add dev ${HOST_IFACE[$ch]} protocol ip parent 1:0 prio 1 u32 match ip dst ${HOST_IP[$vh]}/32 flowid 1:${classid}"
   done
 done
@@ -195,7 +209,7 @@ for vh in "${VALIDATOR_HOSTS_ARR[@]}"; do
     # Validator's egress back toward this client (symmetric split).
     HOST_CMD[$vh]="${HOST_CMD[$vh]} && \
       sudo-g5k tc class add dev ${HOST_IFACE[$vh]} parent 1: classid 1:${vclassid} htb rate 10gbit && \
-      sudo-g5k tc qdisc add dev ${HOST_IFACE[$vh]} parent 1:${vclassid} handle ${vclassid}: netem delay ${half}ms && \
+      sudo-g5k tc qdisc add dev ${HOST_IFACE[$vh]} parent 1:${vclassid} handle ${vclassid}: netem delay ${half}ms limit ${NETEM_QUEUE_LIMIT} && \
       sudo-g5k tc filter add dev ${HOST_IFACE[$vh]} protocol ip parent 1:0 prio 1 u32 match ip dst ${HOST_IP[$ch]}/32 flowid 1:${vclassid}"
   done
 done
@@ -210,7 +224,7 @@ for vh1 in "${VALIDATOR_HOSTS_ARR[@]}"; do
     vvclassid=$((vvclassid + 1))
     HOST_CMD[$vh1]="${HOST_CMD[$vh1]} && \
       sudo-g5k tc class add dev ${HOST_IFACE[$vh1]} parent 1: classid 1:${vvclassid} htb rate 10gbit && \
-      sudo-g5k tc qdisc add dev ${HOST_IFACE[$vh1]} parent 1:${vvclassid} handle ${vvclassid}: netem delay ${half}ms && \
+      sudo-g5k tc qdisc add dev ${HOST_IFACE[$vh1]} parent 1:${vvclassid} handle ${vvclassid}: netem delay ${half}ms limit ${NETEM_QUEUE_LIMIT} && \
       sudo-g5k tc filter add dev ${HOST_IFACE[$vh1]} protocol ip parent 1:0 prio 1 u32 match ip dst ${HOST_IP[$vh2]}/32 flowid 1:${vvclassid}"
   done
 done

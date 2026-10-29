@@ -228,6 +228,7 @@ else
 fi
 scp "${LOCAL_DIR}/scripts/provision_super_owner_chains.sh" \
   "${LOCAL_DIR}/scripts/run_lite_benchmark_parallel.sh" \
+  "${LOCAL_DIR}/scripts/build_client_wallets.py" \
   "${CLIENT_HOST}:${REMOTE_DIR}/scripts/"
 ssh "${CLIENT_HOST}" "chmod +x ${REMOTE_DIR}/bin/* ${REMOTE_DIR}/scripts/*.sh"
 
